@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 from pathlib import Path
+from decouple import Csv, config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,12 +21,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-9d6rw=jo)#476nqx9xh%--k9p$w4l$&pxk7gbhw&hj+^4(kxi-"
+SECRET_KEY = config("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config("DEBUG", cast=bool, default=False)
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = config(
+    "ALLOWED_HOSTS",
+    cast=Csv(),
+    default="localhost,127.0.0.1,0.0.0.0,pixyish-chae-doziest.ngrok-free.dev",
+)
 
 
 # Application definition
@@ -38,12 +43,19 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     
+    # Custom apps
+    "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",
+    "drf_spectacular",
+    
     # Local apps
     "djapps.user_management.apps.UserManagementConfig",
+    "djapps.datasets.apps.DatasetsConfig",
 ]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "config.api.middleware.RequestIDMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -77,8 +89,12 @@ WSGI_APPLICATION = "config.wsgi.application"
 
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": config("DB_NAME"),
+        "USER": config("DB_USER"),
+        "PASSWORD": config("DB_PASSWORD"),
+        "HOST": config("DB_HOST"),
+        "PORT": config("DB_PORT"),
     }
 }
 
@@ -118,5 +134,66 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = "static/"
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+DATASET_MAX_UPLOAD_SIZE = config(
+    "DATASET_MAX_UPLOAD_SIZE",
+    cast=int,
+    default=50 * 1024 * 1024,
+)
+DATASET_ALLOWED_FILE_EXTENSIONS = tuple(
+    item.strip().lower()
+    for item in config(
+        "DATASET_ALLOWED_FILE_EXTENSIONS",
+        default=".csv,.json,.pdf,.tsv,.txt,.xls,.xlsx,.zip",
+    ).split(",")
+    if item.strip()
+)
 
 AUTH_USER_MODEL = "user_management.User"
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    "EXCEPTION_HANDLER": "config.api.exceptions.standardized_exception_handler",
+}
+
+SIMPLE_JWT = {
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Smarthub Project API',
+    'DESCRIPTION': (
+        'APIs for SmartHub. '
+        'Protected endpoints use JWT bearer authentication with the header '
+        '`Authorization: Bearer <access_token>`. '
+        'Successful responses are wrapped as `{success, message, data}` and '
+        'errors are wrapped as `{success: false, error: {...}}`.'
+    ),
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
+    'SORT_OPERATIONS': True,
+    'SORT_OPERATION_PARAMETERS': True,
+    'TAGS': [
+        {'name': 'Authentication', 'description': 'JWT and social authentication endpoints.'},
+        {'name': 'Authorization', 'description': 'Role and permission protected endpoints.'},
+        {'name': 'Datasets', 'description': 'Dataset discovery and core dataset CRUD endpoints.'},
+        {'name': 'Dataset Workflow', 'description': 'Review and publication workflow endpoints.'},
+        {'name': 'Dataset Taxonomy', 'description': 'Category and tag taxonomy endpoints.'},
+        {'name': 'Dataset Files', 'description': 'Dataset file upload, download, and file metadata endpoints.'},
+        {'name': 'Dataset Audit', 'description': 'Dataset audit, indexing, and status history endpoints.'},
+    ],
+    'SWAGGER_UI_SETTINGS': {
+        'persistAuthorization': True,
+        'displayRequestDuration': True,
+        'docExpansion': 'list',
+    },
+}
