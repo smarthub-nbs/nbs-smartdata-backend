@@ -1,0 +1,504 @@
+import hashlib
+import os
+
+from django.conf import settings
+from django.utils import timezone
+from drf_spectacular.utils import extend_schema_field
+from rest_framework import serializers
+from rest_framework.serializers import ModelSerializer
+
+from djapps.datasets.models import (
+    Category,
+    Dataset,
+    DatasetAuditLog,
+    DatasetFile,
+    DatasetFrequency,
+    DatasetMetadata,
+    DatasetStatus,
+    DatasetStatusHistory,
+    DatasetTag,
+    DatasetVersion,
+    FileValidationStatus,
+    IndexingStatus,
+    Tag,
+)
+
+
+DEFAULT_ALLOWED_DATASET_FILE_EXTENSIONS = {
+    ".csv",
+    ".json",
+    ".pdf",
+    ".tsv",
+    ".txt",
+    ".xls",
+    ".xlsx",
+    ".zip",
+}
+DEFAULT_MAX_DATASET_FILE_SIZE = 50 * 1024 * 1024
+
+
+def _compute_file_checksum(uploaded_file):
+    checksum = hashlib.sha256()
+    current_position = uploaded_file.tell() if hasattr(uploaded_file, "tell") else None
+
+    for chunk in uploaded_file.chunks():
+        checksum.update(chunk)
+
+    if current_position is not None:
+        uploaded_file.seek(current_position)
+
+    return checksum.hexdigest()
+
+
+class CategorySerializer(ModelSerializer):
+    class Meta:
+        model = Category
+        fields = (
+            "id",
+            "name",
+            "slug",
+        )
+
+
+class TagSerializer(ModelSerializer):
+    class Meta:
+        model = Tag
+        fields = (
+            "id",
+            "name",
+            "slug",
+        )
+
+
+class DatasetMetadataSummarySerializer(ModelSerializer):
+    class Meta:
+        model = DatasetMetadata
+        fields = (
+            "id",
+            "title",
+            "description",
+            "license",
+            "frequency",
+            "region",
+            "year",
+            "publisher_name",
+        )
+
+
+class DatasetFileSummarySerializer(ModelSerializer):
+    class Meta:
+        model = DatasetFile
+        fields = (
+            "id",
+            "filename",
+            "file_size",
+            "file_format",
+            "checksum",
+            "is_primary",
+            "validation_status",
+            "validated_at",
+            "validation_notes",
+            "is_safe",
+        )
+
+
+class DatasetVersionSummarySerializer(ModelSerializer):
+    files = DatasetFileSummarySerializer(many=True, read_only=True)
+
+    class Meta:
+        model = DatasetVersion
+        fields = (
+            "id",
+            "version_number",
+            "changelog",
+            "created_by",
+            "files",
+        )
+
+
+class DatasetSerializer(ModelSerializer):
+    publisher_user_id = serializers.UUIDField(read_only=True)
+    category = CategorySerializer(read_only=True)
+
+    class Meta:
+        model = Dataset
+        fields = (
+            "id",
+            "category",
+            "publisher_user_id",
+            "slug",
+            "status",
+            "visibility",
+            "published_at",
+        )
+
+
+class DatasetDetailSerializer(DatasetSerializer):
+    metadata = DatasetMetadataSummarySerializer(many=True, read_only=True)
+    tags = serializers.SerializerMethodField()
+    versions = DatasetVersionSummarySerializer(many=True, read_only=True)
+
+    class Meta(DatasetSerializer.Meta):
+        fields = DatasetSerializer.Meta.fields + (
+            "metadata",
+            "tags",
+            "versions",
+        )
+
+    @extend_schema_field(TagSerializer(many=True))
+    def get_tags(self, obj):
+        return TagSerializer([item.tag for item in obj.dataset_tags.select_related("tag").all()], many=True).data
+
+
+class DatasetWriteSerializer(ModelSerializer):
+    publisher_user_id = serializers.UUIDField(read_only=True)
+    category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
+
+    class Meta:
+        model = Dataset
+        fields = (
+            "id",
+            "category",
+            "publisher_user_id",
+            "slug",
+            "status",
+            "visibility",
+            "published_at",
+        )
+        read_only_fields = (
+            "id",
+            "publisher_user_id",
+            "status",
+            "visibility",
+            "published_at",
+        )
+
+
+class DatasetSubmitReviewSerializer(serializers.Serializer):
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=500)
+
+
+class DatasetReviewSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(choices=("approve", "reject"))
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=500)
+
+    def validate(self, attrs):
+        if attrs["action"] == "reject" and not attrs.get("reason"):
+            raise serializers.ValidationError(
+                {"reason": ["This field is required when rejecting a dataset."]}
+            )
+        return attrs
+
+
+class DatasetPublishSerializer(serializers.Serializer):
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=500)
+
+
+class DatasetVersionSerializer(ModelSerializer):
+    dataset = DatasetSerializer(read_only=True)
+    dataset_id = serializers.PrimaryKeyRelatedField(queryset=Dataset.objects.all(), source="dataset")
+
+    class Meta:
+        model = DatasetVersion
+        fields = (
+            "id",
+            "dataset",
+            "dataset_id",
+            "created_by",
+            "version_number",
+            "changelog",
+        )
+        read_only_fields = (
+            "id",
+            "created_by",
+        )
+
+    def validate(self, attrs):
+        dataset = attrs.get("dataset") or getattr(self.instance, "dataset", None)
+        version_number = attrs.get("version_number") or getattr(self.instance, "version_number", None)
+
+        if dataset and version_number:
+            existing = DatasetVersion.objects.filter(dataset=dataset, version_number=version_number)
+            if self.instance is not None:
+                existing = existing.exclude(pk=self.instance.pk)
+            if existing.exists():
+                raise serializers.ValidationError(
+                    {"version_number": ["This version already exists for the dataset."]}
+                )
+        return attrs
+
+
+class DatasetFileSerializer(ModelSerializer):
+    dataset_version = DatasetVersionSerializer(read_only=True)
+    dataset_version_id = serializers.PrimaryKeyRelatedField(
+        queryset=DatasetVersion.objects.all(),
+        source="dataset_version",
+        required=False,
+        allow_null=True,
+    )
+    dataset_id = serializers.PrimaryKeyRelatedField(
+        queryset=Dataset.objects.all(),
+        write_only=True,
+        required=False,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = DatasetFile
+        fields = (
+            "id",
+            "dataset_version",
+            "dataset_version_id",
+            "dataset_id",
+            "uploaded_by",
+            "file",
+            "filename",
+            "file_size",
+            "file_format",
+            "checksum",
+            "is_primary",
+            "validation_status",
+            "validated_at",
+            "validation_notes",
+            "is_safe",
+        )
+        read_only_fields = (
+            "id",
+            "uploaded_by",
+            "filename",
+            "file_size",
+            "file_format",
+            "checksum",
+            "validation_status",
+            "validated_at",
+            "validation_notes",
+            "is_safe",
+        )
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        dataset = attrs.get("dataset_id")
+        dataset_version = attrs.get("dataset_version")
+
+        if self.instance is None and not dataset and not dataset_version:
+            raise serializers.ValidationError(
+                {"dataset_version_id": ["Provide dataset_version_id or dataset_id."]}
+            )
+
+        if dataset and dataset_version and dataset_version.dataset_id != dataset.id:
+            raise serializers.ValidationError(
+                {"dataset_version_id": ["The provided version does not belong to dataset_id."]}
+            )
+
+        if attrs.get("is_primary") and dataset_version:
+            existing = DatasetFile.objects.filter(
+                dataset_version=dataset_version,
+                is_primary=True,
+            )
+            if self.instance is not None:
+                existing = existing.exclude(pk=self.instance.pk)
+            if existing.exists():
+                raise serializers.ValidationError(
+                    {"is_primary": ["Only one primary file is allowed per dataset version."]}
+                )
+
+        return attrs
+
+    def validate_file(self, uploaded_file):
+        extension = os.path.splitext(uploaded_file.name)[1].lower()
+        allowed_extensions = set(
+            getattr(
+                settings,
+                "DATASET_ALLOWED_FILE_EXTENSIONS",
+                DEFAULT_ALLOWED_DATASET_FILE_EXTENSIONS,
+            )
+        )
+        max_size = getattr(
+            settings,
+            "DATASET_MAX_UPLOAD_SIZE",
+            DEFAULT_MAX_DATASET_FILE_SIZE,
+        )
+
+        if extension not in allowed_extensions:
+            raise serializers.ValidationError("Unsupported file type.")
+
+        if uploaded_file.size > max_size:
+            raise serializers.ValidationError("File exceeds the maximum allowed size.")
+
+        return uploaded_file
+
+    def _resolve_dataset_version(self, validated_data):
+        dataset_version = validated_data.get("dataset_version")
+        if dataset_version is not None:
+            return dataset_version
+
+        dataset = validated_data.pop("dataset_id", None)
+        if dataset is None:
+            return None
+
+        dataset_version = dataset.versions.order_by("created_at").first()
+        if dataset_version is not None:
+            return dataset_version
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        return DatasetVersion.objects.create(
+            dataset=dataset,
+            created_by=user,
+            version_number="1.0",
+            changelog="Initial version auto-created for first file upload.",
+        )
+
+    def _populate_file_metadata(self, validated_data):
+        uploaded_file = validated_data.get("file")
+        if uploaded_file is None:
+            return
+
+        extension = os.path.splitext(uploaded_file.name)[1].lower().lstrip(".")
+        validated_data["filename"] = uploaded_file.name
+        validated_data["file_size"] = uploaded_file.size
+        validated_data["file_format"] = extension
+        validated_data["checksum"] = _compute_file_checksum(uploaded_file)
+        validated_data["validation_status"] = FileValidationStatus.VALIDATED
+        validated_data["validated_at"] = timezone.now()
+        validated_data["validation_notes"] = "Automatic validation passed."
+        validated_data["is_safe"] = True
+
+    def create(self, validated_data):
+        dataset_version = self._resolve_dataset_version(validated_data)
+        if dataset_version is not None:
+            validated_data["dataset_version"] = dataset_version
+        self._populate_file_metadata(validated_data)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data.pop("dataset_id", None)
+        self._populate_file_metadata(validated_data)
+        return super().update(instance, validated_data)
+
+
+class DatasetTagSerializer(ModelSerializer):
+    dataset = DatasetSerializer(read_only=True)
+    dataset_id = serializers.PrimaryKeyRelatedField(queryset=Dataset.objects.all(), source="dataset")
+    tag = TagSerializer(read_only=True)
+    tag_id = serializers.PrimaryKeyRelatedField(queryset=Tag.objects.all(), source="tag")
+
+    class Meta:
+        model = DatasetTag
+        fields = (
+            "id",
+            "dataset",
+            "dataset_id",
+            "tag",
+            "tag_id",
+        )
+
+    def validate(self, attrs):
+        dataset = attrs.get("dataset") or getattr(self.instance, "dataset", None)
+        tag = attrs.get("tag") or getattr(self.instance, "tag", None)
+        if dataset and tag:
+            existing = DatasetTag.objects.filter(dataset=dataset, tag=tag)
+            if self.instance is not None:
+                existing = existing.exclude(pk=self.instance.pk)
+            if existing.exists():
+                raise serializers.ValidationError(
+                    {"tag_id": ["This tag is already linked to the dataset."]}
+                )
+        return attrs
+
+
+class DatasetMetadataSerializer(ModelSerializer):
+    dataset = DatasetSerializer(read_only=True)
+    dataset_id = serializers.PrimaryKeyRelatedField(queryset=Dataset.objects.all(), source="dataset")
+    frequency = serializers.ChoiceField(choices=DatasetFrequency.CHOICES)
+
+    class Meta:
+        model = DatasetMetadata
+        fields = (
+            "id",
+            "dataset",
+            "dataset_id",
+            "title",
+            "description",
+            "license",
+            "frequency",
+            "region",
+            "year",
+            "publisher_name",
+        )
+
+    def validate_year(self, value):
+        if value is None:
+            return value
+
+        current_year = timezone.now().year + 1
+        if value < 1900 or value > current_year:
+            raise serializers.ValidationError("Enter a valid year.")
+        return value
+
+    def validate(self, attrs):
+        dataset = attrs.get("dataset") or getattr(self.instance, "dataset", None)
+        if dataset is not None and self.instance is None:
+            if DatasetMetadata.objects.filter(dataset=dataset).exists():
+                raise serializers.ValidationError(
+                    {"dataset_id": ["This dataset already has metadata."]}
+                )
+        return attrs
+
+
+class IndexingStatusSerializer(ModelSerializer):
+    dataset = DatasetSerializer(read_only=True)
+    dataset_id = serializers.PrimaryKeyRelatedField(queryset=Dataset.objects.all(), source="dataset")
+
+    class Meta:
+        model = IndexingStatus
+        fields = (
+            "id",
+            "dataset",
+            "dataset_id",
+            "indexed_at",
+            "status",
+            "details",
+        )
+
+
+class DatasetStatusHistorySerializer(ModelSerializer):
+    dataset = DatasetSerializer(read_only=True)
+    dataset_id = serializers.PrimaryKeyRelatedField(queryset=Dataset.objects.all(), source="dataset", write_only=True)
+
+    class Meta:
+        model = DatasetStatusHistory
+        fields = (
+            "id",
+            "dataset",
+            "dataset_id",
+            "changed_by",
+            "old_status",
+            "new_status",
+            "reason",
+            "changed_at",
+        )
+        read_only_fields = (
+            "id",
+            "changed_by",
+            "changed_at",
+        )
+
+
+class DatasetAuditLogSerializer(ModelSerializer):
+    actor_email = serializers.EmailField(source="actor.email", read_only=True)
+
+    class Meta:
+        model = DatasetAuditLog
+        fields = (
+            "id",
+            "dataset",
+            "actor",
+            "actor_email",
+            "action",
+            "target_model",
+            "target_id",
+            "details",
+            "created_at",
+        )
+        read_only_fields = fields
