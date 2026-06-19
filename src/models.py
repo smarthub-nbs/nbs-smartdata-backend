@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from django.utils import timezone
 
@@ -33,6 +35,7 @@ class AllObjectsManager(models.Manager.from_queryset(SoftDeleteQuerySet)):
 
 
 class BaseModel(models.Model):
+    id = models.UUIDField(primary_key=True,editable=False,default=uuid.uuid4)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     deleted_at = models.DateTimeField(blank=True, null=True)
