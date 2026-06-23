@@ -1,10 +1,14 @@
+import io
+import json
 from tempfile import TemporaryDirectory
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
+from pypdf import PdfWriter
 from rest_framework.test import APIClient
+import xlwt
 
 from .models import Category, Dataset, DatasetAuditLog, DatasetStatus, Tag
 
@@ -33,10 +37,14 @@ class DatasetWorkflowTests(TestCase):
         self.editor = self.user_model.objects.create_user(
             email="editor@example.com",
             password="password123",
+            first_name="Data",
+            last_name="Editor",
         )
         self.admin = self.user_model.objects.create_user(
             email="admin@example.com",
             password="password123",
+            first_name="System",
+            last_name="Admin",
         )
         self.viewer = self.user_model.objects.create_user(
             email="viewer@example.com",
@@ -84,16 +92,14 @@ class DatasetWorkflowTests(TestCase):
 
     def create_draft_dataset(self, slug="climate-draft"):
         self.client.force_authenticate(user=self.editor)
-        response = self.client.post(
-            "/dataset/",
-            {
-                "category": str(self.category.id),
-                "slug": slug,
-            },
-            format="json",
-        )
+        payload = {
+            "category": str(self.category.id),
+        }
+        if slug is not None:
+            payload["slug"] = slug
+        response = self.client.post("/dataset/", payload, format="json")
         self.assertEqual(response.status_code, 201)
-        return Dataset.objects.get(slug=slug)
+        return Dataset.objects.get(id=response.data["data"]["id"])
 
     def upload_valid_file(self, dataset, filename="climate.csv"):
         self.client.force_authenticate(user=self.editor)
@@ -113,6 +119,42 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 201)
         return response
 
+    def upload_file(self, dataset, filename, content, content_type, is_primary=True):
+        self.client.force_authenticate(user=self.editor)
+        response = self.client.post(
+            "/dataset/files/",
+            {
+                "dataset_id": str(dataset.id),
+                "file": SimpleUploadedFile(
+                    filename,
+                    content,
+                    content_type=content_type,
+                ),
+                "is_primary": is_primary,
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 201)
+        return response
+
+    def build_xls_content(self):
+        workbook = xlwt.Workbook()
+        sheet = workbook.add_sheet("Sheet1")
+        sheet.write(0, 0, "country")
+        sheet.write(0, 1, "value")
+        sheet.write(1, 0, "TZ")
+        sheet.write(1, 1, 10)
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        return buffer.getvalue()
+
+    def build_pdf_content(self):
+        buffer = io.BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=300, height=144)
+        writer.write(buffer)
+        return buffer.getvalue()
+
     def add_metadata(self, dataset):
         self.client.force_authenticate(user=self.editor)
         response = self.client.post(
@@ -125,11 +167,11 @@ class DatasetWorkflowTests(TestCase):
                 "frequency": "annual",
                 "region": "East Africa",
                 "year": 2024,
-                "publisher_name": "SmartHub Data Office",
             },
             format="json",
         )
         self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["data"]["publisher_name"], "Data Editor")
 
     def add_tag(self, dataset):
         self.client.force_authenticate(user=self.editor)
@@ -191,6 +233,41 @@ class DatasetWorkflowTests(TestCase):
         dataset.refresh_from_db()
         self.assertEqual(dataset.status, DatasetStatus.DRAFT)
 
+    def test_category_and_tag_creation_auto_generate_unique_slugs(self):
+        self.client.force_authenticate(user=self.admin)
+
+        category_response = self.client.post(
+            "/dataset/categories/",
+            {"name": "Population"},
+            format="json",
+        )
+        self.assertEqual(category_response.status_code, 201)
+        self.assertEqual(category_response.data["data"]["slug"], "population")
+
+        duplicate_category_response = self.client.post(
+            "/dataset/categories/",
+            {"name": "Population"},
+            format="json",
+        )
+        self.assertEqual(duplicate_category_response.status_code, 201)
+        self.assertEqual(duplicate_category_response.data["data"]["slug"], "population-2")
+
+        tag_response = self.client.post(
+            "/dataset/tags/",
+            {"name": "Open Health"},
+            format="json",
+        )
+        self.assertEqual(tag_response.status_code, 201)
+        self.assertEqual(tag_response.data["data"]["slug"], "open-health")
+
+    def test_dataset_creation_auto_generates_slug_when_omitted(self):
+        first_dataset = self.create_draft_dataset(slug=None)
+        second_dataset = self.create_draft_dataset(slug=None)
+
+        self.assertEqual(first_dataset.slug, "climate-dataset")
+        self.assertEqual(second_dataset.slug, "climate-dataset-2")
+        self.assertEqual(first_dataset.status, DatasetStatus.DRAFT)
+
     def test_upload_file_validates_and_auto_creates_initial_version(self):
         dataset = self.create_draft_dataset(slug="file-validation-draft")
 
@@ -244,6 +321,154 @@ class DatasetWorkflowTests(TestCase):
         )
         self.assertEqual(publish_response.status_code, 403)
 
+    def test_metadata_publisher_name_is_derived_from_dataset_owner(self):
+        dataset = self.create_draft_dataset(slug="derived-publisher-name")
+
+        self.client.force_authenticate(user=self.editor)
+        response = self.client.post(
+            "/dataset/metadata/",
+            {
+                "dataset_id": str(dataset.id),
+                "title": "Climate Statistics",
+                "description": "Annual climate observations.",
+                "license": "CC-BY-4.0",
+                "frequency": "annual",
+                "region": "East Africa",
+                "year": 2024,
+                "publisher_name": "Malicious Override",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["data"]["publisher_name"], "Data Editor")
+        dataset.refresh_from_db()
+        self.assertEqual(dataset.metadata.first().publisher_name, "Data Editor")
+
+    def test_public_can_access_structured_dataset_rows_via_api(self):
+        dataset = self.make_dataset_ready_for_review(slug="structured-api-dataset")
+        self.assertEqual(self.submit_for_review(dataset).status_code, 200)
+        self.assertEqual(self.approve_dataset(dataset).status_code, 200)
+        self.assertEqual(self.publish_dataset(dataset).status_code, 200)
+
+        dataset_file = dataset.versions.first().files.first()
+        self.client.force_authenticate(user=None)
+        response = self.client.get(
+            f"/dataset/files/{dataset_file.id}/data/",
+            {"offset": 0, "limit": 10},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        payload = response.data["data"]
+        self.assertEqual(payload["file_format"], "csv")
+        self.assertEqual(payload["columns"], ["country", "value"])
+        self.assertEqual(payload["rows"], [{"country": "TZ", "value": "10"}])
+        self.assertEqual(payload["total_rows"], 1)
+        self.assertFalse(payload["has_more"])
+
+        actions = set(
+            DatasetAuditLog.objects.filter(dataset=dataset).values_list("action", flat=True)
+        )
+        self.assertIn("file_data_accessed", actions)
+
+    def test_structured_dataset_api_supports_xls_files(self):
+        dataset = self.create_draft_dataset(slug="structured-xls-dataset")
+        upload_response = self.upload_file(
+            dataset,
+            "climate.xls",
+            self.build_xls_content(),
+            "application/vnd.ms-excel",
+        )
+
+        dataset_file_id = upload_response.data["data"]["id"]
+        response = self.client.get(f"/dataset/files/{dataset_file_id}/data/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.data["data"]
+        self.assertEqual(payload["structure_type"], "tabular")
+        self.assertEqual(payload["file_format"], "xls")
+        self.assertEqual(payload["columns"], ["country", "value"])
+        self.assertEqual(payload["rows"], [{"country": "TZ", "value": 10}])
+
+    def test_structured_dataset_api_supports_sdmx_json(self):
+        dataset = self.create_draft_dataset(slug="structured-sdmx-json-dataset")
+        sdmx_payload = {
+            "header": {"id": "climate-observations"},
+            "structure": {
+                "dimensions": {
+                    "observation": [
+                        {"id": "REF_AREA", "values": [{"id": "TZ"}, {"id": "KE"}]},
+                        {"id": "TIME_PERIOD", "values": [{"id": "2024"}]},
+                    ]
+                },
+                "attributes": {"observation": []},
+                "measures": {"observation": [{"id": "OBS_VALUE"}]},
+            },
+            "dataSets": [
+                {
+                    "observations": {
+                        "0:0": [10],
+                        "1:0": [20],
+                    }
+                }
+            ],
+        }
+        upload_response = self.upload_file(
+            dataset,
+            "climate-sdmx.json",
+            json.dumps(sdmx_payload).encode("utf-8"),
+            "application/json",
+        )
+
+        dataset_file_id = upload_response.data["data"]["id"]
+        response = self.client.get(f"/dataset/files/{dataset_file_id}/data/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.data["data"]
+        self.assertEqual(payload["structure_type"], "sdmx")
+        self.assertEqual(payload["sdmx"]["format"], "json")
+        self.assertEqual(payload["sdmx"]["dimensions"], ["REF_AREA", "TIME_PERIOD"])
+        self.assertEqual(payload["rows"][0]["REF_AREA"], "TZ")
+        self.assertEqual(payload["rows"][0]["TIME_PERIOD"], "2024")
+        self.assertEqual(payload["rows"][0]["value"], 10)
+
+    def test_structured_dataset_api_returns_document_payload_for_pdf(self):
+        dataset = self.create_draft_dataset(slug="structured-pdf-dataset")
+        upload_response = self.upload_file(
+            dataset,
+            "guide.pdf",
+            self.build_pdf_content(),
+            "application/pdf",
+        )
+
+        dataset_file_id = upload_response.data["data"]["id"]
+        response = self.client.get(f"/dataset/files/{dataset_file_id}/data/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.data["data"]
+        self.assertEqual(payload["structure_type"], "document")
+        self.assertEqual(payload["document"]["page_count"], 1)
+        self.assertEqual(len(payload["document"]["pages"]), 1)
+        self.assertEqual(payload["document"]["pages"][0]["page_number"], 1)
+
+    def test_structured_dataset_api_rejects_unsupported_file_formats(self):
+        dataset = self.create_draft_dataset(slug="unsupported-structured-format")
+        upload_response = self.upload_file(
+            dataset,
+            "guide.txt",
+            b"plain text content",
+            "text/plain",
+        )
+
+        dataset_file_id = upload_response.data["data"]["id"]
+        response = self.client.get(f"/dataset/files/{dataset_file_id}/data/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data["success"])
+        self.assertEqual(response.data["error"]["code"], "validation_error")
+        self.assertIn("file_format", response.data["error"]["details"]["fields"])
+
     def test_admin_can_review_publish_and_public_can_discover_and_download(self):
         dataset = self.make_dataset_ready_for_review(slug="public-climate-data")
         submit_response = self.submit_for_review(dataset)
@@ -269,6 +494,7 @@ class DatasetWorkflowTests(TestCase):
                 "year": 2024,
                 "frequency": "annual",
                 "tag": "open-data",
+                "publisher": "Data Editor",
             },
         )
         self.assertEqual(discovery_response.status_code, 200)

@@ -14,7 +14,6 @@ from djapps.datasets.models import (
     DatasetFile,
     DatasetFrequency,
     DatasetMetadata,
-    DatasetStatus,
     DatasetStatusHistory,
     DatasetTag,
     DatasetVersion,
@@ -32,6 +31,8 @@ DEFAULT_ALLOWED_DATASET_FILE_EXTENSIONS = {
     ".txt",
     ".xls",
     ".xlsx",
+    ".xml",
+    ".sdmx",
     ".zip",
 }
 DEFAULT_MAX_DATASET_FILE_SIZE = 50 * 1024 * 1024
@@ -58,6 +59,9 @@ class CategorySerializer(ModelSerializer):
             "name",
             "slug",
         )
+        extra_kwargs = {
+            "slug": {"required": False},
+        }
 
 
 class TagSerializer(ModelSerializer):
@@ -68,6 +72,9 @@ class TagSerializer(ModelSerializer):
             "name",
             "slug",
         )
+        extra_kwargs = {
+            "slug": {"required": False},
+        }
 
 
 class DatasetMetadataSummarySerializer(ModelSerializer):
@@ -172,6 +179,9 @@ class DatasetWriteSerializer(ModelSerializer):
             "visibility",
             "published_at",
         )
+        extra_kwargs = {
+            "slug": {"required": False},
+        }
 
 
 class DatasetSubmitReviewSerializer(serializers.Serializer):
@@ -377,6 +387,35 @@ class DatasetFileSerializer(ModelSerializer):
         return super().update(instance, validated_data)
 
 
+class DatasetFileDataQuerySerializer(serializers.Serializer):
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=200, default=50)
+    offset = serializers.IntegerField(required=False, min_value=0, default=0)
+
+
+class DatasetFileDataResponseSerializer(serializers.Serializer):
+    file_id = serializers.UUIDField(read_only=True)
+    filename = serializers.CharField(read_only=True)
+    file_format = serializers.CharField(read_only=True)
+    structure_type = serializers.CharField(read_only=True)
+    columns = serializers.ListField(child=serializers.CharField(), read_only=True, required=False)
+    rows = serializers.ListField(
+        child=serializers.DictField(child=serializers.JSONField()),
+        read_only=True,
+        required=False,
+    )
+    data = serializers.JSONField(read_only=True, required=False)
+    sdmx = serializers.JSONField(read_only=True, required=False)
+    document = serializers.JSONField(read_only=True, required=False)
+    offset = serializers.IntegerField(read_only=True)
+    limit = serializers.IntegerField(read_only=True)
+    returned_items = serializers.IntegerField(read_only=True)
+    total_items = serializers.IntegerField(read_only=True)
+    returned_rows = serializers.IntegerField(read_only=True)
+    total_rows = serializers.IntegerField(read_only=True)
+    has_more = serializers.BooleanField(read_only=True)
+    warnings = serializers.ListField(child=serializers.CharField(), read_only=True, required=False)
+
+
 class DatasetTagSerializer(ModelSerializer):
     dataset = DatasetSerializer(read_only=True)
     dataset_id = serializers.PrimaryKeyRelatedField(queryset=Dataset.objects.all(), source="dataset")
@@ -411,6 +450,7 @@ class DatasetMetadataSerializer(ModelSerializer):
     dataset = DatasetSerializer(read_only=True)
     dataset_id = serializers.PrimaryKeyRelatedField(queryset=Dataset.objects.all(), source="dataset")
     frequency = serializers.ChoiceField(choices=DatasetFrequency.CHOICES)
+    publisher_name = serializers.CharField(read_only=True)
 
     class Meta:
         model = DatasetMetadata

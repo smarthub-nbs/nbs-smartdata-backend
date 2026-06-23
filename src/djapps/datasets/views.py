@@ -1,6 +1,3 @@
-import uuid
-
-from django.conf import settings
 from django.db.models import Q
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -9,7 +6,6 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
     OpenApiExample,
     OpenApiParameter,
-    OpenApiRequest,
     OpenApiResponse,
     extend_schema,
     extend_schema_view,
@@ -34,7 +30,6 @@ from djapps.datasets.models import (
     Dataset,
     DatasetAuditLog,
     DatasetFile,
-    DatasetFrequency,
     DatasetMetadata,
     DatasetStatus,
     DatasetStatusHistory,
@@ -43,6 +38,12 @@ from djapps.datasets.models import (
     FileValidationStatus,
     IndexingStatus,
     Tag,
+)
+from djapps.datasets.helpers import (
+    create_status_history,
+    filter_related_queryset_by_dataset_access,
+    request_audit_details,
+    validate_dataset_ready_for_review,
 )
 from djapps.datasets.permissions import (
     CanAccessDataset,
@@ -60,6 +61,8 @@ from djapps.datasets.serializers import (
     DatasetAuditLogSerializer,
     DatasetDetailSerializer,
     DatasetFileSerializer,
+    DatasetFileDataQuerySerializer,
+    DatasetFileDataResponseSerializer,
     DatasetMetadataSerializer,
     DatasetPublishSerializer,
     DatasetReviewSerializer,
@@ -72,185 +75,15 @@ from djapps.datasets.serializers import (
     IndexingStatusSerializer,
     TagSerializer,
 )
+from djapps.datasets.openapi import (
+    DATASET_FILE_UPLOAD_DESCRIPTION,
+    DATASET_FILE_UPLOAD_REQUEST,
+    DATASET_ID_PARAMETER,
+    DATASET_LIST_PARAMETERS,
+)
+from djapps.datasets.structured_data import build_structured_payload
 from djapps.user_management.api.permissions import IsAdminOrSuperuser
-
-
-DATASET_ID_PARAMETER = OpenApiParameter(
-    name="dataset_id",
-    type=OpenApiTypes.UUID,
-    location=OpenApiParameter.PATH,
-    description="Dataset UUID.",
-)
-
-DATASET_LIST_PARAMETERS = [
-    OpenApiParameter(
-        name="q",
-        type=str,
-        location=OpenApiParameter.QUERY,
-        description="Free-text search across slug, metadata, category, and tag fields.",
-    ),
-    OpenApiParameter(
-        name="category",
-        type=str,
-        location=OpenApiParameter.QUERY,
-        description="Filter by category UUID or category slug.",
-    ),
-    OpenApiParameter(
-        name="tag",
-        type=str,
-        location=OpenApiParameter.QUERY,
-        description="Filter by tag UUID or tag slug.",
-    ),
-    OpenApiParameter(
-        name="region",
-        type=str,
-        location=OpenApiParameter.QUERY,
-        description="Filter by metadata region.",
-    ),
-    OpenApiParameter(
-        name="year",
-        type=OpenApiTypes.INT,
-        location=OpenApiParameter.QUERY,
-        description="Filter by metadata year.",
-    ),
-    OpenApiParameter(
-        name="license",
-        type=str,
-        location=OpenApiParameter.QUERY,
-        description="Filter by metadata license value.",
-    ),
-    OpenApiParameter(
-        name="frequency",
-        type=str,
-        enum=[choice[0] for choice in DatasetFrequency.CHOICES],
-        location=OpenApiParameter.QUERY,
-        description="Filter by metadata update frequency.",
-    ),
-    OpenApiParameter(
-        name="publisher",
-        type=str,
-        location=OpenApiParameter.QUERY,
-        description="Filter by metadata publisher name.",
-    ),
-    OpenApiParameter(
-        name="file_format",
-        type=str,
-        location=OpenApiParameter.QUERY,
-        description="Filter by file format such as csv, json, pdf, xls, or xlsx.",
-    ),
-    OpenApiParameter(
-        name="status",
-        type=str,
-        enum=[choice[0] for choice in DatasetStatus.CHOICES],
-        location=OpenApiParameter.QUERY,
-        description="Filter by dataset workflow status. Applied only for dataset admins.",
-    ),
-]
-
-DATASET_FILE_UPLOAD_REQUEST = OpenApiRequest(
-    request=DatasetFileSerializer,
-    encoding={"file": {"contentType": "*/*"}},
-)
-
-DATASET_FILE_UPLOAD_DESCRIPTION = (
-    "Upload a dataset file using multipart form data. "
-    f"Allowed extensions: {', '.join(settings.DATASET_ALLOWED_FILE_EXTENSIONS)}. "
-    f"Maximum size: {settings.DATASET_MAX_UPLOAD_SIZE // (1024 * 1024)} MB."
-)
-
-
-def request_audit_details(request, **extra):
-    details = {
-        "request_id": getattr(request, "request_id", None),
-        "ip_address": request.META.get("REMOTE_ADDR"),
-        "user_agent": request.META.get("HTTP_USER_AGENT"),
-    }
-    details.update(extra)
-    return {
-        key: value
-        for key, value in details.items()
-        if value is not None and value != ""
-    }
-
-
-def create_status_history(dataset, changed_by, old_status, new_status, reason):
-    return DatasetStatusHistory.objects.create(
-        dataset=dataset,
-        changed_by=changed_by,
-        old_status=old_status,
-        new_status=new_status,
-        reason=reason,
-    )
-
-
-def validate_dataset_ready_for_review(dataset):
-    errors = {}
-    metadata = dataset.metadata.first()
-
-    if metadata is None:
-        errors["metadata"] = ["Dataset metadata is required before review."]
-    else:
-        metadata_errors = {}
-        for field_name, label in (
-            ("title", "title"),
-            ("description", "description"),
-            ("license", "license"),
-            ("frequency", "frequency"),
-            ("region", "region"),
-            ("year", "year"),
-            ("publisher_name", "publisher_name"),
-        ):
-            value = getattr(metadata, field_name)
-            if value in {None, ""}:
-                metadata_errors[label] = [f"{label.replace('_', ' ').title()} is required."]
-        if metadata_errors:
-            errors["metadata"] = metadata_errors
-
-    if not dataset.dataset_tags.exists():
-        errors["tags"] = ["At least one tag is required before review."]
-
-    versions = dataset.versions.prefetch_related("files").all()
-    if not versions.exists():
-        errors["versions"] = ["At least one dataset version is required before review."]
-    else:
-        files = DatasetFile.objects.filter(dataset_version__dataset=dataset)
-        if not files.exists():
-            errors["files"] = ["At least one dataset file is required before review."]
-        elif not files.filter(
-            validation_status=FileValidationStatus.VALIDATED,
-            is_safe=True,
-        ).exists():
-            errors["files"] = ["At least one validated safe file is required before review."]
-
-    if errors:
-        raise ValidationError(errors)
-
-
-def build_identifier_filter(id_field, slug_field, raw_value):
-    try:
-        parsed = uuid.UUID(str(raw_value))
-    except (TypeError, ValueError, AttributeError):
-        return Q(**{slug_field: raw_value})
-    return Q(**{id_field: parsed}) | Q(**{slug_field: raw_value})
-
-
-def filter_related_queryset_by_dataset_access(queryset, user, dataset_lookup):
-    active_filter = Q(**{f"{dataset_lookup}__deleted_at__isnull": True})
-    public_filter = Q(
-        **{
-            f"{dataset_lookup}__visibility": True,
-            f"{dataset_lookup}__status": DatasetStatus.PUBLISHED,
-        }
-    )
-
-    if not user or not user.is_authenticated:
-        return queryset.filter(active_filter & public_filter)
-
-    if has_dataset_admin_access(user):
-        return queryset.filter(active_filter)
-
-    owner_filter = Q(**{f"{dataset_lookup}__publisher_user": user})
-    return queryset.filter(active_filter & (public_filter | owner_filter)).distinct()
+from utils.query import build_identifier_filter
 
 
 class PublicReadAdminWriteViewSet(StandardizedModelViewSet):
@@ -297,7 +130,7 @@ class PublicReadAdminWriteViewSet(StandardizedModelViewSet):
         tags=["Dataset Taxonomy"],
         operation_id="dataset_category_create",
         summary="Create a dataset category",
-        description="Create a new dataset category. Admin access is required.",
+        description="Create a new dataset category. Admin access is required. If `slug` is omitted, it is generated automatically from `name`.",
         request=CategorySerializer,
         responses={
             201: success_response_schema(
@@ -412,7 +245,7 @@ class CategoryView(PublicReadAdminWriteViewSet):
         tags=["Dataset Taxonomy"],
         operation_id="dataset_tag_create",
         summary="Create a dataset tag",
-        description="Create a new dataset tag. Admin access is required.",
+        description="Create a new dataset tag. Admin access is required. If `slug` is omitted, it is generated automatically from `name`.",
         request=TagSerializer,
         responses={
             201: success_response_schema(
@@ -629,14 +462,13 @@ class DatasetView(DatasetBaseView):
         tags=["Datasets"],
         operation_id="dataset_create",
         summary="Create dataset draft",
-        description="Create a new dataset in `draft` status. The authenticated user becomes the dataset publisher.",
+        description="Create a new dataset in `draft` status. The authenticated user becomes the dataset publisher. If `slug` is omitted, it is generated automatically.",
         request=DatasetWriteSerializer,
         examples=[
             OpenApiExample(
                 "Create Dataset Request",
                 value={
                     "category": "11111111-1111-1111-1111-111111111111",
-                    "slug": "climate-statistics-2024",
                 },
                 request_only=True,
             ),
@@ -1353,6 +1185,88 @@ class DatasetFileView(DatasetScopedViewSet):
             dataset_file.file.open("rb"),
             as_attachment=True,
             filename=dataset_file.filename,
+        )
+
+    @extend_schema(
+        tags=["Dataset Files"],
+        operation_id="dataset_file_data",
+        summary="Read structured dataset content",
+        description=(
+            "Return parsed rows for structured dataset files. "
+            "Supported formats are csv, tsv, json, xls, xlsx, sdmx/xml, and pdf. "
+            "Public access is allowed for published datasets; authenticated owners and dataset admins can also access private datasets."
+        ),
+        auth=[],
+        parameters=[
+            OpenApiParameter(
+                name="offset",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                description="Zero-based row offset into the parsed dataset rows.",
+                default=0,
+            ),
+            OpenApiParameter(
+                name="limit",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                description="Maximum number of rows to return. Minimum 1, maximum 200.",
+                default=50,
+            ),
+        ],
+        responses={
+            200: success_response_schema(
+                "DatasetFileDataSuccessResponse",
+                DatasetFileDataResponseSerializer,
+                description="Structured dataset rows returned successfully.",
+            ),
+            **standard_error_responses(
+                "DatasetFileData",
+                include_400=True,
+                include_404=True,
+            ),
+        },
+    )
+    @action(detail=True, methods=["get"], url_path="data")
+    def data(self, request, pk=None):
+        dataset_file = self.get_object()
+        params = DatasetFileDataQuerySerializer(data=request.query_params)
+        params.is_valid(raise_exception=True)
+
+        if (
+            dataset_file.validation_status != FileValidationStatus.VALIDATED
+            or not dataset_file.is_safe
+        ):
+            raise ValidationError(
+                {"file": ["Structured API access is available only for validated safe files."]}
+            )
+
+        payload = {
+            "file_id": dataset_file.id,
+            "filename": dataset_file.filename,
+            "file_format": dataset_file.file_format,
+            **build_structured_payload(
+                dataset_file,
+                offset=params.validated_data["offset"],
+                limit=params.validated_data["limit"],
+            ),
+        }
+
+        log_dataset_event(
+            dataset_file.dataset_version.dataset,
+            "file_data_accessed",
+            actor=request.user if request.user.is_authenticated else None,
+            target=dataset_file,
+            details=request_audit_details(
+                request,
+                filename=dataset_file.filename,
+                offset=payload["offset"],
+                limit=payload["limit"],
+                returned_rows=payload["returned_rows"],
+            ),
+        )
+        return success_response(
+            data=payload,
+            message="Structured dataset content retrieved successfully.",
         )
 
 
