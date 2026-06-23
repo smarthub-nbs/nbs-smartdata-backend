@@ -36,6 +36,7 @@ ALLOWED_HOSTS = config(
 # Application definition
 
 INSTALLED_APPS = [
+    "unfold",          # django admin theme
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -47,10 +48,12 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "drf_spectacular",
+    "schema_viewer",
     
     # Local apps
     "djapps.user_management.apps.UserManagementConfig",
     "djapps.datasets.apps.DatasetsConfig",
+    "djapps.gateway.apps.GatewayConfig"
 ]
 
 MIDDLEWARE = [
@@ -95,6 +98,15 @@ DATABASES = {
         "PASSWORD": config("DB_PASSWORD"),
         "HOST": config("DB_HOST"),
         "PORT": config("DB_PORT"),
+        "CONN_MAX_AGE" : 0,
+        "OPTIONS":{
+            "pool":{
+                "min_size":2,
+                "max_size":10,
+                "timeout":30
+            }
+            
+        }
     }
 }
 
@@ -146,7 +158,7 @@ DATASET_ALLOWED_FILE_EXTENSIONS = tuple(
     item.strip().lower()
     for item in config(
         "DATASET_ALLOWED_FILE_EXTENSIONS",
-        default=".csv,.json,.pdf,.tsv,.txt,.xls,.xlsx,.zip",
+        default=".csv,.json,.pdf,.tsv,.txt,.xls,.xlsx,.xml,.sdmx,.zip",
     ).split(",")
     if item.strip()
 )
@@ -190,10 +202,19 @@ SPECTACULAR_SETTINGS = {
         {'name': 'Dataset Taxonomy', 'description': 'Category and tag taxonomy endpoints.'},
         {'name': 'Dataset Files', 'description': 'Dataset file upload, download, and file metadata endpoints.'},
         {'name': 'Dataset Audit', 'description': 'Dataset audit, indexing, and status history endpoints.'},
+        {'name': 'Gateway', 'description': 'Public and API-key dataset access endpoints.'},
+        {'name': 'Developer API Keys', 'description': 'Developer API key management and usage endpoints.'},
     ],
     'SWAGGER_UI_SETTINGS': {
         'persistAuthorization': True,
         'displayRequestDuration': True,
         'docExpansion': 'list',
     },
+}
+
+
+UNFOLD = {
+    "SITE_TITLE": "smarthub",
+    "SITE_HEADER": "SMARTHUB ADMIN PANEL",
+    "SITE_SUBHEADER": "Admin panel for Smarthub",
 }

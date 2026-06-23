@@ -19,13 +19,19 @@ from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 
+prefix = "api/v1"
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path('schema-viewer/', include('schema_viewer.urls')),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
-    # Optional UI:
     path('', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
+    path(f"{prefix}/", include("djapps.user_management.api.urls")),
+    path(f"{prefix}/gateway/", include("djapps.gateway.urls")),
+    path("api/gateway/", include("djapps.gateway.urls")),
     path("api/", include("djapps.user_management.api.urls")),
+    path(f"{prefix}/developer/", include("djapps.gateway.developer_urls")),
+    path(f"{prefix}/dataset/", include("djapps.datasets.urls")),
     path("dataset/", include("djapps.datasets.urls")),
 ]

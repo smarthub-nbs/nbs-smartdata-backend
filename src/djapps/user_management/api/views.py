@@ -323,7 +323,7 @@ class GitHubSocialLoginAPIView(StandardizedAPIView):
             OpenApiExample(
                 "GitHub Social Login Request",
                 value={
-                    "access_token": "github_pat_exampletoken",
+                    "access_token": "github_user_oauth_access_token",
                 },
                 request_only=True,
             ),
