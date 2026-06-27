@@ -148,6 +148,7 @@ USE_TZ = True
 STATIC_URL = "static/"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="no-reply@smarthub.local")
 
 DATASET_MAX_UPLOAD_SIZE = config(
     "DATASET_MAX_UPLOAD_SIZE",
@@ -180,6 +181,26 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
+GITHUB_OAUTH_CLIENT_ID = config("GITHUB_OAUTH_CLIENT_ID", default="")
+GITHUB_OAUTH_CLIENT_SECRET = config("GITHUB_OAUTH_CLIENT_SECRET", default="")
+GITHUB_OAUTH_ALLOWED_REDIRECT_URIS = tuple(
+    item.strip()
+    for item in config("GITHUB_OAUTH_ALLOWED_REDIRECT_URIS", default="").split(",")
+    if item.strip()
+)
+PASSWORD_RESET_TOKEN_MAX_AGE = config(
+    "PASSWORD_RESET_TOKEN_MAX_AGE",
+    cast=int,
+    default=3600,
+)
+EMAIL_VERIFICATION_TOKEN_MAX_AGE = config(
+    "EMAIL_VERIFICATION_TOKEN_MAX_AGE",
+    cast=int,
+    default=86400,
+)
+FRONTEND_PASSWORD_RESET_URL = config("FRONTEND_PASSWORD_RESET_URL", default="")
+FRONTEND_EMAIL_VERIFICATION_URL = config("FRONTEND_EMAIL_VERIFICATION_URL", default="")
+
 SPECTACULAR_SETTINGS = {
     'TITLE': 'Smarthub Project API',
     'DESCRIPTION': (
@@ -192,8 +213,16 @@ SPECTACULAR_SETTINGS = {
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
     'COMPONENT_SPLIT_REQUEST': True,
+    'PREPROCESSING_HOOKS': [
+        'config.api.spectacular.keep_canonical_api_endpoints',
+    ],
     'SORT_OPERATIONS': True,
     'SORT_OPERATION_PARAMETERS': True,
+    'ENUM_NAME_OVERRIDES': {
+        'DatasetWorkflowStatusEnum': 'djapps.datasets.models.DatasetStatus.CHOICES',
+        'APIConsumerStatusEnum': 'djapps.gateway.models.APIConsumer.STATUS_CHOICES',
+        'APIKeyStatusEnum': 'djapps.gateway.models.APIKey.STATUS_CHOICES',
+    },
     'TAGS': [
         {'name': 'Authentication', 'description': 'JWT and social authentication endpoints.'},
         {'name': 'Authorization', 'description': 'Role and permission protected endpoints.'},

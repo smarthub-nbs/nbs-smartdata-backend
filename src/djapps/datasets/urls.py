@@ -3,6 +3,8 @@ from rest_framework import routers
 
 from djapps.datasets.views import (
     CategoryView,
+    DatasetAdminQueueView,
+    DatasetAdminQueueSummaryView,
     DatasetDetailView,
     DatasetFileView,
     DatasetMetadataView,
@@ -31,6 +33,12 @@ router.register(r"audit-logs", DatasetAuditLogView, basename="dataset-audit-log"
 
 urlpatterns = [
     path("", DatasetView.as_view(), name="dataset-list-create"),
+    path("admin-queue/", DatasetAdminQueueView.as_view(), name="dataset-admin-queue"),
+    path(
+        "admin-queue/summary/",
+        DatasetAdminQueueSummaryView.as_view(),
+        name="dataset-admin-queue-summary",
+    ),
     path("<uuid:dataset_id>/", DatasetDetailView.as_view(), name="dataset-detail"),
     path(
         "<uuid:dataset_id>/submit-review/",

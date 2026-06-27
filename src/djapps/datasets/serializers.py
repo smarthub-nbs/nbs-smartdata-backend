@@ -140,6 +140,43 @@ class DatasetSerializer(ModelSerializer):
         )
 
 
+class DatasetAdminQueueItemSerializer(ModelSerializer):
+    title = serializers.CharField(read_only=True, allow_null=True)
+    category_slug = serializers.CharField(source="category.slug", read_only=True)
+    category_name = serializers.CharField(source="category.name", read_only=True)
+    has_metadata = serializers.BooleanField(read_only=True)
+    has_tag = serializers.BooleanField(read_only=True)
+    has_file = serializers.BooleanField(read_only=True)
+    primary_file_id = serializers.UUIDField(read_only=True, allow_null=True)
+
+    class Meta:
+        model = Dataset
+        fields = (
+            "id",
+            "slug",
+            "title",
+            "status",
+            "visibility",
+            "category_slug",
+            "category_name",
+            "has_metadata",
+            "has_tag",
+            "has_file",
+            "primary_file_id",
+            "updated_at",
+            "created_at",
+        )
+
+
+class DatasetAdminQueueSummarySerializer(serializers.Serializer):
+    total = serializers.IntegerField(read_only=True)
+    draft = serializers.IntegerField(read_only=True)
+    in_review = serializers.IntegerField(read_only=True)
+    approved = serializers.IntegerField(read_only=True)
+    rejected = serializers.IntegerField(read_only=True)
+    published = serializers.IntegerField(read_only=True)
+
+
 class DatasetDetailSerializer(DatasetSerializer):
     metadata = DatasetMetadataSummarySerializer(many=True, read_only=True)
     tags = serializers.SerializerMethodField()

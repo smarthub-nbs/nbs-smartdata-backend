@@ -50,13 +50,13 @@ Useful local URLs:
 
 ```text
 http://127.0.0.1:8000/admin/
-http://127.0.0.1:8000/api/ping/
+http://127.0.0.1:8000/api/v1/ping/
 ```
 
 Smoke-test the public API endpoint while the server is running:
 
 ```bash
-curl http://127.0.0.1:8000/api/ping/
+curl http://127.0.0.1:8000/api/v1/ping/
 ```
 
 ## Database And Migrations
