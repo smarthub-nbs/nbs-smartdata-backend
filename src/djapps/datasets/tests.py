@@ -3,14 +3,22 @@ import json
 from tempfile import TemporaryDirectory
 
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Group, Permission
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from pypdf import PdfWriter
 from rest_framework.test import APIClient
 import xlwt
 
-from .models import Category, Dataset, DatasetAuditLog, DatasetStatus, Tag
+from .models import (
+    Category,
+    Dataset,
+    DatasetAuditLog,
+    DatasetMetadata,
+    DatasetStatus,
+    DatasetTag,
+    Tag,
+)
+from djapps.user_management.roles import ensure_group_permissions
 
 
 class DatasetWorkflowTests(TestCase):
@@ -51,44 +59,12 @@ class DatasetWorkflowTests(TestCase):
             password="password123",
         )
 
-        editor_group, _ = Group.objects.get_or_create(name="editor")
-        admin_group, _ = Group.objects.get_or_create(name="admin")
-        viewer_group, _ = Group.objects.get_or_create(name="user")
+        editor_group, _ = ensure_group_permissions("editor")
+        admin_group, _ = ensure_group_permissions("admin")
+        viewer_group, _ = ensure_group_permissions("user")
         self.editor.groups.add(editor_group)
         self.admin.groups.add(admin_group)
         self.viewer.groups.add(viewer_group)
-
-        permission_sets = {
-            editor_group: (
-                "datasets.view_dataset",
-                "datasets.add_dataset",
-                "datasets.change_dataset",
-                "datasets.delete_dataset",
-            ),
-            admin_group: (
-                "datasets.view_dataset",
-                "datasets.view_all_dataset",
-                "datasets.add_dataset",
-                "datasets.change_dataset",
-                "datasets.delete_dataset",
-                "datasets.review_dataset",
-                "datasets.publish_dataset",
-            ),
-            viewer_group: (
-                "datasets.view_dataset",
-            ),
-        }
-        for group, permission_labels in permission_sets.items():
-            permissions = [
-                Permission.objects.get(
-                    content_type__app_label=app_label,
-                    codename=codename,
-                )
-                for app_label, codename in (
-                    label.split(".", 1) for label in permission_labels
-                )
-            ]
-            group.permissions.set(permissions)
 
     def create_draft_dataset(self, slug="climate-draft"):
         self.client.force_authenticate(user=self.editor)
@@ -97,14 +73,14 @@ class DatasetWorkflowTests(TestCase):
         }
         if slug is not None:
             payload["slug"] = slug
-        response = self.client.post("/dataset/", payload, format="json")
+        response = self.client.post("/api/v1/dataset/", payload, format="json")
         self.assertEqual(response.status_code, 201)
         return Dataset.objects.get(id=response.data["data"]["id"])
 
     def upload_valid_file(self, dataset, filename="climate.csv"):
         self.client.force_authenticate(user=self.editor)
         response = self.client.post(
-            "/dataset/files/",
+            "/api/v1/dataset/files/",
             {
                 "dataset_id": str(dataset.id),
                 "file": SimpleUploadedFile(
@@ -122,7 +98,7 @@ class DatasetWorkflowTests(TestCase):
     def upload_file(self, dataset, filename, content, content_type, is_primary=True):
         self.client.force_authenticate(user=self.editor)
         response = self.client.post(
-            "/dataset/files/",
+            "/api/v1/dataset/files/",
             {
                 "dataset_id": str(dataset.id),
                 "file": SimpleUploadedFile(
@@ -158,7 +134,7 @@ class DatasetWorkflowTests(TestCase):
     def add_metadata(self, dataset):
         self.client.force_authenticate(user=self.editor)
         response = self.client.post(
-            "/dataset/metadata/",
+            "/api/v1/dataset/metadata/",
             {
                 "dataset_id": str(dataset.id),
                 "title": "Climate Statistics",
@@ -176,7 +152,7 @@ class DatasetWorkflowTests(TestCase):
     def add_tag(self, dataset):
         self.client.force_authenticate(user=self.editor)
         response = self.client.post(
-            "/dataset/tag-links/",
+            "/api/v1/dataset/tag-links/",
             {
                 "dataset_id": str(dataset.id),
                 "tag_id": str(self.tag.id),
@@ -196,7 +172,7 @@ class DatasetWorkflowTests(TestCase):
     def submit_for_review(self, dataset):
         self.client.force_authenticate(user=self.editor)
         return self.client.post(
-            f"/dataset/{dataset.id}/submit-review/",
+            f"/api/v1/dataset/{dataset.id}/submit-review/",
             {"reason": "Ready for admin review."},
             format="json",
         )
@@ -204,7 +180,7 @@ class DatasetWorkflowTests(TestCase):
     def approve_dataset(self, dataset):
         self.client.force_authenticate(user=self.admin)
         return self.client.post(
-            f"/dataset/{dataset.id}/review/",
+            f"/api/v1/dataset/{dataset.id}/review/",
             {"action": "approve", "reason": "Checks passed."},
             format="json",
         )
@@ -212,7 +188,7 @@ class DatasetWorkflowTests(TestCase):
     def publish_dataset(self, dataset):
         self.client.force_authenticate(user=self.admin)
         return self.client.post(
-            f"/dataset/{dataset.id}/publish/",
+            f"/api/v1/dataset/{dataset.id}/publish/",
             {"reason": "Publishing approved dataset."},
             format="json",
         )
@@ -222,7 +198,7 @@ class DatasetWorkflowTests(TestCase):
 
         self.client.force_authenticate(user=self.editor)
         response = self.client.post(
-            f"/dataset/{dataset.id}/submit-review/",
+            f"/api/v1/dataset/{dataset.id}/submit-review/",
             {"reason": "Attempting early review."},
             format="json",
         )
@@ -237,7 +213,7 @@ class DatasetWorkflowTests(TestCase):
         self.client.force_authenticate(user=self.admin)
 
         category_response = self.client.post(
-            "/dataset/categories/",
+            "/api/v1/dataset/categories/",
             {"name": "Population"},
             format="json",
         )
@@ -245,7 +221,7 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(category_response.data["data"]["slug"], "population")
 
         duplicate_category_response = self.client.post(
-            "/dataset/categories/",
+            "/api/v1/dataset/categories/",
             {"name": "Population"},
             format="json",
         )
@@ -253,12 +229,129 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(duplicate_category_response.data["data"]["slug"], "population-2")
 
         tag_response = self.client.post(
-            "/dataset/tags/",
+            "/api/v1/dataset/tags/",
             {"name": "Open Health"},
             format="json",
         )
         self.assertEqual(tag_response.status_code, 201)
         self.assertEqual(tag_response.data["data"]["slug"], "open-health")
+
+    def test_admin_queue_returns_paginated_dataset_status_overview(self):
+        economy = Category.objects.create(name="Economy", slug="economy")
+        queue_dataset = Dataset.objects.create(
+            publisher_user=self.editor,
+            category=economy,
+            slug="national-budget-2024",
+            status=DatasetStatus.DRAFT,
+            visibility=False,
+        )
+        DatasetMetadata.objects.create(
+            dataset=queue_dataset,
+            title="National Budget 2024",
+            description="Draft budget package.",
+            region="National",
+            year=2024,
+        )
+        DatasetTag.objects.create(dataset=queue_dataset, tag=self.tag)
+
+        published_dataset = Dataset.objects.create(
+            publisher_user=self.editor,
+            category=economy,
+            slug="national-budget-archive",
+            status=DatasetStatus.PUBLISHED,
+            visibility=True,
+        )
+        DatasetMetadata.objects.create(
+            dataset=published_dataset,
+            title="National Budget Archive",
+            description="Published budget archive.",
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get(
+            "/api/v1/dataset/admin-queue/",
+            {
+                "q": "budget",
+                "status": "draft",
+                "page": 1,
+                "page_size": 10,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        payload = response.data["data"]
+        self.assertEqual(payload["pagination"]["page"], 1)
+        self.assertEqual(payload["pagination"]["page_size"], 10)
+        self.assertEqual(payload["pagination"]["total_items"], 1)
+        self.assertEqual(payload["pagination"]["total_pages"], 1)
+        self.assertFalse(payload["pagination"]["has_next"])
+        self.assertFalse(payload["pagination"]["has_previous"])
+
+        self.assertEqual(len(payload["items"]), 1)
+        item = payload["items"][0]
+        self.assertEqual(item["id"], str(queue_dataset.id))
+        self.assertEqual(item["slug"], "national-budget-2024")
+        self.assertEqual(item["title"], "National Budget 2024")
+        self.assertEqual(item["status"], DatasetStatus.DRAFT)
+        self.assertFalse(item["visibility"])
+        self.assertEqual(item["category_slug"], "economy")
+        self.assertEqual(item["category_name"], "Economy")
+        self.assertTrue(item["has_metadata"])
+        self.assertTrue(item["has_tag"])
+        self.assertFalse(item["has_file"])
+        self.assertIsNone(item["primary_file_id"])
+        self.assertIsNotNone(item["updated_at"])
+        self.assertIsNotNone(item["created_at"])
+
+    def test_admin_queue_requires_dataset_admin_permissions(self):
+        self.client.force_authenticate(user=self.editor)
+        response = self.client.get("/api/v1/dataset/admin-queue/")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(response.data["success"])
+
+    def test_admin_queue_summary_returns_status_counts(self):
+        datasets = [
+            ("queue-draft-1", DatasetStatus.DRAFT, False),
+            ("queue-draft-2", DatasetStatus.DRAFT, False),
+            ("queue-in-review", DatasetStatus.IN_REVIEW, False),
+            ("queue-approved", DatasetStatus.APPROVED, False),
+            ("queue-rejected", DatasetStatus.REJECTED, False),
+            ("queue-published", DatasetStatus.PUBLISHED, True),
+        ]
+        for slug, status_value, visibility in datasets:
+            Dataset.objects.create(
+                publisher_user=self.editor,
+                category=self.category,
+                slug=slug,
+                status=status_value,
+                visibility=visibility,
+            )
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get("/api/v1/dataset/admin-queue/summary/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(
+            response.data["data"],
+            {
+                "total": 6,
+                "draft": 2,
+                "in_review": 1,
+                "approved": 1,
+                "rejected": 1,
+                "published": 1,
+            },
+        )
+
+    def test_admin_queue_summary_requires_dataset_admin_permissions(self):
+        self.client.force_authenticate(user=self.editor)
+        response = self.client.get("/api/v1/dataset/admin-queue/summary/")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(response.data["success"])
 
     def test_dataset_creation_auto_generates_slug_when_omitted(self):
         first_dataset = self.create_draft_dataset(slug=None)
@@ -289,7 +382,7 @@ class DatasetWorkflowTests(TestCase):
 
         self.client.force_authenticate(user=self.editor)
         response = self.client.post(
-            "/dataset/files/",
+            "/api/v1/dataset/files/",
             {
                 "dataset_id": str(dataset.id),
                 "file": SimpleUploadedFile(
@@ -315,7 +408,7 @@ class DatasetWorkflowTests(TestCase):
 
         self.client.force_authenticate(user=self.editor)
         publish_response = self.client.post(
-            f"/dataset/{dataset.id}/publish/",
+            f"/api/v1/dataset/{dataset.id}/publish/",
             {"reason": "Trying to bypass review."},
             format="json",
         )
@@ -326,7 +419,7 @@ class DatasetWorkflowTests(TestCase):
 
         self.client.force_authenticate(user=self.editor)
         response = self.client.post(
-            "/dataset/metadata/",
+            "/api/v1/dataset/metadata/",
             {
                 "dataset_id": str(dataset.id),
                 "title": "Climate Statistics",
@@ -354,7 +447,7 @@ class DatasetWorkflowTests(TestCase):
         dataset_file = dataset.versions.first().files.first()
         self.client.force_authenticate(user=None)
         response = self.client.get(
-            f"/dataset/files/{dataset_file.id}/data/",
+            f"/api/v1/dataset/files/{dataset_file.id}/data/",
             {"offset": 0, "limit": 10},
         )
 
@@ -382,7 +475,7 @@ class DatasetWorkflowTests(TestCase):
         )
 
         dataset_file_id = upload_response.data["data"]["id"]
-        response = self.client.get(f"/dataset/files/{dataset_file_id}/data/")
+        response = self.client.get(f"/api/v1/dataset/files/{dataset_file_id}/data/")
 
         self.assertEqual(response.status_code, 200)
         payload = response.data["data"]
@@ -422,7 +515,7 @@ class DatasetWorkflowTests(TestCase):
         )
 
         dataset_file_id = upload_response.data["data"]["id"]
-        response = self.client.get(f"/dataset/files/{dataset_file_id}/data/")
+        response = self.client.get(f"/api/v1/dataset/files/{dataset_file_id}/data/")
 
         self.assertEqual(response.status_code, 200)
         payload = response.data["data"]
@@ -443,7 +536,7 @@ class DatasetWorkflowTests(TestCase):
         )
 
         dataset_file_id = upload_response.data["data"]["id"]
-        response = self.client.get(f"/dataset/files/{dataset_file_id}/data/")
+        response = self.client.get(f"/api/v1/dataset/files/{dataset_file_id}/data/")
 
         self.assertEqual(response.status_code, 200)
         payload = response.data["data"]
@@ -462,7 +555,7 @@ class DatasetWorkflowTests(TestCase):
         )
 
         dataset_file_id = upload_response.data["data"]["id"]
-        response = self.client.get(f"/dataset/files/{dataset_file_id}/data/")
+        response = self.client.get(f"/api/v1/dataset/files/{dataset_file_id}/data/")
 
         self.assertEqual(response.status_code, 400)
         self.assertFalse(response.data["success"])
@@ -487,7 +580,7 @@ class DatasetWorkflowTests(TestCase):
 
         self.client.force_authenticate(user=None)
         discovery_response = self.client.get(
-            "/dataset/",
+            "/api/v1/dataset/",
             {
                 "q": "climate",
                 "region": "East Africa",
@@ -501,14 +594,14 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(len(discovery_response.data["data"]), 1)
         self.assertEqual(discovery_response.data["data"][0]["slug"], "public-climate-data")
 
-        detail_response = self.client.get(f"/dataset/{dataset.id}/")
+        detail_response = self.client.get(f"/api/v1/dataset/{dataset.id}/")
         self.assertEqual(detail_response.status_code, 200)
         self.assertEqual(detail_response.data["data"]["status"], DatasetStatus.PUBLISHED)
         self.assertEqual(detail_response.data["data"]["metadata"][0]["region"], "East Africa")
         self.assertEqual(detail_response.data["data"]["metadata"][0]["frequency"], "annual")
 
         dataset_file = dataset.versions.first().files.first()
-        download_response = self.client.get(f"/dataset/files/{dataset_file.id}/download/")
+        download_response = self.client.get(f"/api/v1/dataset/files/{dataset_file.id}/download/")
         self.assertEqual(download_response.status_code, 200)
         self.assertIn("attachment;", download_response.headers["Content-Disposition"])
 
@@ -522,7 +615,7 @@ class DatasetWorkflowTests(TestCase):
         dataset = self.make_dataset_ready_for_review(slug="audited-dataset")
 
         self.client.force_authenticate(user=self.editor)
-        owner_response = self.client.get("/dataset/audit-logs/")
+        owner_response = self.client.get("/api/v1/dataset/audit-logs/")
         self.assertEqual(owner_response.status_code, 200)
         self.assertTrue(owner_response.data["success"])
         self.assertGreater(len(owner_response.data["data"]), 0)
@@ -534,7 +627,7 @@ class DatasetWorkflowTests(TestCase):
         )
 
         self.client.force_authenticate(user=self.viewer)
-        viewer_response = self.client.get("/dataset/audit-logs/")
+        viewer_response = self.client.get("/api/v1/dataset/audit-logs/")
         self.assertEqual(viewer_response.status_code, 200)
         self.assertEqual(viewer_response.data["data"], [])
 
@@ -543,7 +636,7 @@ class DatasetWorkflowTests(TestCase):
         dataset_file = dataset.versions.first().files.first()
 
         self.client.force_authenticate(user=self.editor)
-        response = self.client.delete(f"/dataset/{dataset.id}/")
+        response = self.client.delete(f"/api/v1/dataset/{dataset.id}/")
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data["success"])
@@ -554,18 +647,18 @@ class DatasetWorkflowTests(TestCase):
         self.assertTrue(Dataset.all_objects.filter(id=dataset.id).exists())
 
         self.client.force_authenticate(user=self.editor)
-        detail_response = self.client.get(f"/dataset/{dataset.id}/")
+        detail_response = self.client.get(f"/api/v1/dataset/{dataset.id}/")
         self.assertEqual(detail_response.status_code, 404)
 
-        related_response = self.client.get(f"/dataset/files/{dataset_file.id}/")
+        related_response = self.client.get(f"/api/v1/dataset/files/{dataset_file.id}/")
         self.assertEqual(related_response.status_code, 404)
 
-        audit_response = self.client.get("/dataset/audit-logs/")
+        audit_response = self.client.get("/api/v1/dataset/audit-logs/")
         self.assertEqual(audit_response.status_code, 200)
         self.assertEqual(audit_response.data["data"], [])
 
         self.client.force_authenticate(user=None)
-        public_response = self.client.get("/dataset/")
+        public_response = self.client.get("/api/v1/dataset/")
         self.assertEqual(public_response.status_code, 200)
         self.assertEqual(public_response.data["data"], [])
 
@@ -573,7 +666,7 @@ class DatasetWorkflowTests(TestCase):
         self.create_draft_dataset(slug="protected-category-draft")
 
         self.client.force_authenticate(user=self.admin)
-        response = self.client.delete(f"/dataset/categories/{self.category.id}/")
+        response = self.client.delete(f"/api/v1/dataset/categories/{self.category.id}/")
 
         self.assertEqual(response.status_code, 409)
         self.assertFalse(response.data["success"])

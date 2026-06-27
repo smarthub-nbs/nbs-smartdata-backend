@@ -32,7 +32,7 @@ from djapps.datasets.serializers import (
     DatasetFileDataResponseSerializer,
     DatasetMetadataSummarySerializer,
 )
-from djapps.user_management.api.permissions import HasAnyGroup
+from djapps.user_management.api.permissions import HasPermission
 from utils.pagination import CustomPagination
 from utils.query import build_identifier_filter
 
@@ -1458,9 +1458,30 @@ class OpenDatasetFileDataAPIView(OpenDatasetFileResourceAPIView):
 
 
 class DeveloperAPIBaseView(StandardizedAPIView):
-    permission_classes = [HasAnyGroup]
-    required_groups = ("developer", "admin")
+    permission_classes = [HasPermission]
     pagination_class = CustomPagination
+
+    @property
+    def required_permissions(self):
+        method = self.request.method
+        path = self.request.path
+
+        if method == "POST" and path.endswith("/api-keys/request/"):
+            return (
+                "gateway.add_apiconsumer",
+                "gateway.view_apiconsumer",
+                "gateway.change_apiconsumer",
+                "gateway.add_apikey",
+            )
+        if method == "POST" and (
+            path.endswith("/regenerate/") or path.endswith("/revoke/")
+        ):
+            return ("gateway.change_apikey",)
+        if method == "GET" and (
+            path.endswith("/usage/") or path.endswith("/api-usage/")
+        ):
+            return ("gateway.view_apiusagelog",)
+        return ("gateway.view_apikey",)
 
     def get_api_key_queryset(self):
         return APIKey.objects.select_related("consumer").prefetch_related("scopes").filter(

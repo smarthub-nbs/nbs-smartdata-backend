@@ -1,4 +1,4 @@
-from django.db.models import Q
+from django.db.models import Count, Exists, OuterRef, Q, Subquery
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -58,6 +58,8 @@ from djapps.datasets.permissions import (
 )
 from djapps.datasets.serializers import (
     CategorySerializer,
+    DatasetAdminQueueItemSerializer,
+    DatasetAdminQueueSummarySerializer,
     DatasetAuditLogSerializer,
     DatasetDetailSerializer,
     DatasetFileSerializer,
@@ -76,23 +78,43 @@ from djapps.datasets.serializers import (
     TagSerializer,
 )
 from djapps.datasets.openapi import (
+    DATASET_ADMIN_QUEUE_PARAMETERS,
+    DATASET_ADMIN_QUEUE_PAYLOAD,
     DATASET_FILE_UPLOAD_DESCRIPTION,
     DATASET_FILE_UPLOAD_REQUEST,
     DATASET_ID_PARAMETER,
     DATASET_LIST_PARAMETERS,
 )
 from djapps.datasets.structured_data import build_structured_payload
-from djapps.user_management.api.permissions import IsAdminOrSuperuser
+from djapps.user_management.api.permissions import HasPermission
+from utils.pagination import CustomPagination
 from utils.query import build_identifier_filter
 
 
 class PublicReadAdminWriteViewSet(StandardizedModelViewSet):
-    permission_classes = (IsAdminOrSuperuser,)
+    permission_classes = (HasPermission,)
 
     def get_permissions(self):
         if self.action in {"list", "retrieve"}:
             return [AllowAny()]
-        return [IsAdminOrSuperuser()]
+        self.required_permissions = self.get_required_permissions()
+        return [HasPermission()]
+
+    def get_required_permissions(self):
+        action_to_permission = {
+            "create": "add",
+            "update": "change",
+            "partial_update": "change",
+            "destroy": "delete",
+        }
+        permission_action = action_to_permission.get(self.action)
+        if permission_action is None:
+            return ()
+
+        model = self.get_queryset().model
+        return (
+            f"{model._meta.app_label}.{permission_action}_{model._meta.model_name}",
+        )
 
 
 @extend_schema_view(
@@ -328,6 +350,7 @@ class DatasetBaseView(StandardizedAPIView):
     serializer_class = DatasetSerializer
     detail_serializer_class = DatasetDetailSerializer
     write_serializer_class = DatasetWriteSerializer
+    pagination_class = CustomPagination
 
     def get_base_queryset(self):
         return Dataset.objects.select_related(
@@ -347,45 +370,30 @@ class DatasetBaseView(StandardizedAPIView):
     def serialize_detail(self, dataset):
         return self.detail_serializer_class(dataset).data
 
+    def paginate_queryset(self, queryset):
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, self.request, view=self)
+        return paginator, page
 
-class DatasetView(DatasetBaseView):
+    def apply_dataset_search_filter(self, queryset, search):
+        return queryset.filter(
+            Q(slug__icontains=search)
+            | Q(metadata__title__icontains=search)
+            | Q(metadata__description__icontains=search)
+            | Q(metadata__publisher_name__icontains=search)
+            | Q(metadata__region__icontains=search)
+            | Q(category__name__icontains=search)
+            | Q(category__slug__icontains=search)
+            | Q(dataset_tags__tag__name__icontains=search)
+            | Q(dataset_tags__tag__slug__icontains=search)
+        )
 
-    def get_permissions(self):
-        if self.request.method == "GET":
-            return [AllowAny()]
-        return [CanCreateDataset()]
-
-    def get_queryset(self):
-        queryset = self.get_base_queryset()
-        user = self.request.user
+    def filter_dataset_queryset(self, queryset, *, allow_status_filter=False):
         params = self.request.query_params
-
-        if not user or not user.is_authenticated:
-            queryset = queryset.filter(
-                visibility=True,
-                status=DatasetStatus.PUBLISHED,
-            )
-        elif has_dataset_admin_access(user):
-            queryset = queryset
-        else:
-            queryset = queryset.filter(
-                Q(visibility=True, status=DatasetStatus.PUBLISHED)
-                | Q(publisher_user=user)
-            )
 
         search = params.get("q")
         if search:
-            queryset = queryset.filter(
-                Q(slug__icontains=search)
-                | Q(metadata__title__icontains=search)
-                | Q(metadata__description__icontains=search)
-                | Q(metadata__publisher_name__icontains=search)
-                | Q(metadata__region__icontains=search)
-                | Q(category__name__icontains=search)
-                | Q(category__slug__icontains=search)
-                | Q(dataset_tags__tag__name__icontains=search)
-                | Q(dataset_tags__tag__slug__icontains=search)
-            )
+            queryset = self.apply_dataset_search_filter(queryset, search)
 
         category = params.get("category")
         if category:
@@ -429,9 +437,40 @@ class DatasetView(DatasetBaseView):
                 versions__files__file_format__iexact=file_format.lower()
             )
 
-        if params.get("status") and has_dataset_admin_access(user):
+        if allow_status_filter and params.get("status"):
             queryset = queryset.filter(status=params["status"])
 
+        return queryset
+
+
+class DatasetView(DatasetBaseView):
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [AllowAny()]
+        return [CanCreateDataset()]
+
+    def get_queryset(self):
+        queryset = self.get_base_queryset()
+        user = self.request.user
+
+        if not user or not user.is_authenticated:
+            queryset = queryset.filter(
+                visibility=True,
+                status=DatasetStatus.PUBLISHED,
+            )
+        elif has_dataset_admin_access(user):
+            queryset = queryset
+        else:
+            queryset = queryset.filter(
+                Q(visibility=True, status=DatasetStatus.PUBLISHED)
+                | Q(publisher_user=user)
+            )
+
+        queryset = self.filter_dataset_queryset(
+            queryset,
+            allow_status_filter=has_dataset_admin_access(user),
+        )
         return queryset.order_by("-published_at", "-created_at").distinct()
 
     @extend_schema(
@@ -506,6 +545,117 @@ class DatasetView(DatasetBaseView):
             self.serialize_detail(dataset),
             status=status.HTTP_201_CREATED,
         )
+
+
+class DatasetAdminQueueView(DatasetBaseView):
+    permission_classes = [HasPermission]
+    required_permissions = (
+        "datasets.view_all_dataset",
+        "datasets.review_dataset",
+    )
+    serializer_class = DatasetAdminQueueItemSerializer
+
+    def annotate_admin_queue_queryset(self, queryset):
+        metadata_queryset = DatasetMetadata.objects.filter(
+            dataset=OuterRef("pk"),
+            deleted_at__isnull=True,
+        ).order_by("-created_at", "-id")
+        file_queryset = DatasetFile.objects.filter(
+            dataset_version__dataset=OuterRef("pk"),
+            dataset_version__deleted_at__isnull=True,
+            deleted_at__isnull=True,
+        ).order_by("-dataset_version__created_at", "-created_at", "-id")
+
+        return queryset.annotate(
+            title=Subquery(metadata_queryset.values("title")[:1]),
+            has_metadata=Exists(metadata_queryset),
+            has_tag=Exists(
+                DatasetTag.objects.filter(
+                    dataset=OuterRef("pk"),
+                    deleted_at__isnull=True,
+                )
+            ),
+            has_file=Exists(file_queryset),
+            primary_file_id=Subquery(
+                file_queryset.filter(is_primary=True).values("id")[:1]
+            ),
+        )
+
+    @extend_schema(
+        tags=["Dataset Workflow"],
+        operation_id="dataset_admin_queue",
+        summary="List dataset admin queue",
+        description=(
+            "Return a paginated admin queue of datasets for review and workflow tracking. "
+            "Only dataset administrators can access this endpoint."
+        ),
+        parameters=DATASET_ADMIN_QUEUE_PARAMETERS,
+        responses={
+            200: success_response_schema(
+                "DatasetAdminQueueSuccessResponse",
+                DATASET_ADMIN_QUEUE_PAYLOAD,
+                description="Dataset admin queue returned successfully.",
+            ),
+            **standard_error_responses(
+                "DatasetAdminQueue",
+                include_401=True,
+                include_403=True,
+                include_404=True,
+            ),
+        },
+    )
+    def get(self, request):
+        queryset = self.annotate_admin_queue_queryset(
+            self.filter_dataset_queryset(
+                self.get_base_queryset(),
+                allow_status_filter=True,
+            )
+        ).order_by("-updated_at", "-created_at").distinct()
+        paginator, page = self.paginate_queryset(queryset)
+        serializer = self.serializer_class(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class DatasetAdminQueueSummaryView(DatasetBaseView):
+    permission_classes = [HasPermission]
+    required_permissions = (
+        "datasets.view_all_dataset",
+        "datasets.review_dataset",
+    )
+    serializer_class = DatasetAdminQueueSummarySerializer
+
+    @extend_schema(
+        tags=["Dataset Workflow"],
+        operation_id="dataset_admin_queue_summary",
+        summary="Get dataset admin queue summary",
+        description=(
+            "Return admin queue totals grouped by dataset workflow status. "
+            "Only dataset administrators can access this endpoint."
+        ),
+        responses={
+            200: success_response_schema(
+                "DatasetAdminQueueSummarySuccessResponse",
+                DatasetAdminQueueSummarySerializer,
+                description="Dataset admin queue summary returned successfully.",
+            ),
+            **standard_error_responses(
+                "DatasetAdminQueueSummary",
+                include_401=True,
+                include_403=True,
+            ),
+        },
+    )
+    def get(self, request):
+        summary = self.get_base_queryset().aggregate(
+            total=Count("id"),
+            draft=Count("id", filter=Q(status=DatasetStatus.DRAFT)),
+            in_review=Count("id", filter=Q(status=DatasetStatus.IN_REVIEW)),
+            approved=Count("id", filter=Q(status=DatasetStatus.APPROVED)),
+            rejected=Count("id", filter=Q(status=DatasetStatus.REJECTED)),
+            published=Count("id", filter=Q(status=DatasetStatus.PUBLISHED)),
+        )
+        serializer = self.serializer_class(summary)
+        return success_response(data=serializer.data)
 
 
 class DatasetDetailView(DatasetBaseView):
