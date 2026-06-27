@@ -1,72 +1,7 @@
 from django.contrib.auth.models import Group
-from django.contrib.auth.models import Permission
 from django.core.management.base import BaseCommand
 
-
-DEFAULT_GROUPS = ["guest", "user","developer","researcher","admin", "editor", "super_admin"]
-
-GROUP_PERMISSION_MAP = {
-    "guest": (),
-    "user": (
-        "datasets.view_dataset",
-    ),
-    "developer": (
-        "datasets.view_dataset",
-    ),
-    "researcher": (
-        "datasets.view_dataset",
-    ),
-    "editor": (
-        "datasets.view_dataset",
-        "datasets.add_dataset",
-        "datasets.change_dataset",
-        "datasets.delete_dataset",
-    ),
-    "admin": (
-        "datasets.view_dataset",
-        "datasets.view_all_dataset",
-        "datasets.add_dataset",
-        "datasets.change_dataset",
-        "datasets.delete_dataset",
-        "datasets.review_dataset",
-        "datasets.publish_dataset",
-        "user_management.view_user",
-        "user_management.add_user",
-        "user_management.change_user",
-        "user_management.delete_user",
-    ),
-    "super_admin": (
-        "datasets.view_dataset",
-        "datasets.view_all_dataset",
-        "datasets.add_dataset",
-        "datasets.change_dataset",
-        "datasets.delete_dataset",
-        "datasets.review_dataset",
-        "datasets.publish_dataset",
-        "user_management.view_user",
-        "user_management.add_user",
-        "user_management.change_user",
-        "user_management.delete_user",
-    ),
-}
-
-
-def resolve_permissions(permission_labels):
-    permissions = []
-    missing = []
-
-    for label in permission_labels:
-        app_label, codename = label.split(".", 1)
-        permission = Permission.objects.filter(
-            content_type__app_label=app_label,
-            codename=codename,
-        ).first()
-        if permission is None:
-            missing.append(label)
-            continue
-        permissions.append(permission)
-
-    return permissions, missing
+from ...roles import DEFAULT_GROUPS, ensure_group_permissions
 
 
 class Command(BaseCommand):
@@ -92,10 +27,7 @@ class Command(BaseCommand):
                 created.append(name)
             else:
                 existing.append(name)
-            permissions, missing = resolve_permissions(
-                GROUP_PERMISSION_MAP.get(name, ())
-            )
-            group.permissions.set(permissions)
+            _, missing = ensure_group_permissions(name)
 
             if missing:
                 self.stdout.write(
