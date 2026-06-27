@@ -1,55 +1,80 @@
 # Smarthub
 
-Smarthub is a Django project scaffold for building user-focused backend features.
-The current codebase includes a basic project configuration, an admin route, and a
-`user_management` app with a custom `User` model draft.
+Smarthub is a Django backend for user management, dataset workflows, and public/developer gateway APIs.
 
 ## Project Layout
 
 - `src/` - Django project source
-- `src/config/` - project settings, URLs, and WSGI/ASGI entry points
-- `src/djapps/user_management/` - user management app
-- `models.py` - shared abstract timestamp base model
-- `commands.md` - handy project setup commands
-
-## Current Status
-
-The project is still at an early scaffold stage:
-
-- Admin is available at `/admin/`
-- The `user_management` app exists, but its views, tests, and admin registration are still placeholders
-- The custom `User` model includes timestamps, names, email, password hash, user type, and active status fields
+- `src/config/` - settings, URLs, WSGI, and ASGI entry points
+- `src/djapps/user_management/` - authentication, users, roles, and permissions
+- `src/djapps/datasets/` - dataset workflow, metadata, files, and audit logs
+- `src/djapps/gateway/` - public/developer API gateway endpoints
+- `models.py` - shared abstract base models
+- `commands.md` - command reference for setup, migrations, testing, and maintenance
 
 ## Requirements
 
 - Python 3.13+
 - `uv`
+- PostgreSQL
 
-## Getting Started
+## Start The Project After Clone
 
-From the `src/` directory:
+1. Move into the project and Django directories:
+
+```bash
+cd Smarthub
+cd src
+```
+
+2. Make sure the repository root `.env` file exists and has the required settings for your local environment:
+
+- `SECRET_KEY`
+- `DEBUG`
+- `ALLOWED_HOSTS`
+- `DB_NAME`
+- `DB_USER`
+- `DB_PASSWORD`
+- `DB_HOST`
+- `DB_PORT`
+
+3. Install dependencies:
 
 ```bash
 uv sync
+```
+
+4. Apply database migrations:
+
+```bash
 uv run python manage.py migrate
+```
+
+5. Create an admin user if you need Django admin access:
+
+```bash
 uv run python manage.py createsuperuser
+```
+
+6. Start the development server:
+
+```bash
 uv run python manage.py runserver
 ```
 
-Then open:
+## Local URLs
+
+After the server starts, open:
 
 - `http://127.0.0.1:8000/admin/`
+- `http://127.0.0.1:8000/swagger`
+- `http://127.0.0.1:8000/redoc/`
 
-## Useful Commands
+## More Commands
 
-- Start the project:
-  - `uv run django-admin startproject config .`
-- Add an app:
-  - `uv run ../manage.py startapp user_management`
-- Add a package:
-  - `uv add <package_name>`
+For migrations, tests, app scaffolding, package management, and other project commands, see [commands.md](commands.md).
 
 ## Notes
 
-- `src/README.md` is also present because the Python project metadata points to a README in that directory.
-- The project currently uses SQLite for local development.
+- Most Django commands should be run from the `src/` directory.
+- `src/README.md` exists because the Python project metadata points there.
