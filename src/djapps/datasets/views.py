@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Q, Subquery
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -13,7 +14,7 @@ from drf_spectacular.utils import (
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
@@ -50,6 +51,7 @@ from djapps.datasets.permissions import (
     CanAccessDatasetRelatedObject,
     CanCreateDataset,
     CanPublishDataset,
+    CanRestoreDataset,
     CanReviewDataset,
     CanViewDatasetAuditLog,
     can_change_dataset,
@@ -60,22 +62,28 @@ from djapps.datasets.serializers import (
     CategorySerializer,
     DatasetAdminQueueItemSerializer,
     DatasetAdminQueueSummarySerializer,
+    DatasetAdminBulkActionResponseSerializer,
+    DatasetAdminBulkActionSerializer,
     DatasetAuditLogSerializer,
     DatasetDetailSerializer,
     DatasetFileSerializer,
     DatasetFileDataQuerySerializer,
     DatasetFileDataResponseSerializer,
+    DatasetFileValidateSerializer,
     DatasetMetadataSerializer,
     DatasetPublishSerializer,
     DatasetReviewSerializer,
+    DatasetRestoreSerializer,
     DatasetSerializer,
     DatasetStatusHistorySerializer,
     DatasetSubmitReviewSerializer,
     DatasetTagSerializer,
+    DatasetTransferOwnerSerializer,
     DatasetVersionSerializer,
     DatasetWriteSerializer,
     IndexingStatusSerializer,
     TagSerializer,
+    inspect_dataset_file,
 )
 from djapps.datasets.openapi import (
     DATASET_ADMIN_QUEUE_PARAMETERS,
@@ -658,6 +666,145 @@ class DatasetAdminQueueSummaryView(DatasetBaseView):
         return success_response(data=serializer.data)
 
 
+class DatasetAdminBulkActionView(DatasetBaseView):
+    permission_classes = [HasPermission]
+    serializer_class = DatasetAdminBulkActionSerializer
+    response_serializer_class = DatasetAdminBulkActionResponseSerializer
+
+    @property
+    def required_permissions(self):
+        permissions = [
+            "datasets.view_all_dataset",
+            "datasets.review_dataset",
+        ]
+        if self.request.data.get("action") == DatasetAdminBulkActionSerializer.ACTION_PUBLISH:
+            permissions.append("datasets.publish_dataset")
+        return tuple(permissions)
+
+    def get_dataset_queryset(self):
+        return self.get_base_queryset()
+
+    def process_dataset_action(self, dataset, action, reason):
+        old_status = dataset.status
+
+        if action == DatasetAdminBulkActionSerializer.ACTION_APPROVE:
+            if dataset.status != DatasetStatus.IN_REVIEW:
+                raise ValidationError("Only datasets in review can be approved.")
+            dataset.status = DatasetStatus.APPROVED
+            final_reason = reason or "Dataset approved for publication."
+            audit_action = "dataset_review_approved"
+            update_fields = ["status", "visibility", "updated_at"]
+        elif action == DatasetAdminBulkActionSerializer.ACTION_REJECT:
+            if dataset.status != DatasetStatus.IN_REVIEW:
+                raise ValidationError("Only datasets in review can be rejected.")
+            dataset.status = DatasetStatus.REJECTED
+            dataset.visibility = False
+            final_reason = reason
+            audit_action = "dataset_review_rejected"
+            update_fields = ["status", "visibility", "updated_at"]
+        else:
+            if dataset.status != DatasetStatus.APPROVED:
+                raise ValidationError("Only approved datasets can be published.")
+            dataset.status = DatasetStatus.PUBLISHED
+            dataset.visibility = True
+            dataset.published_at = dataset.published_at or timezone.now()
+            final_reason = reason or "Published via API."
+            audit_action = "dataset_published"
+            update_fields = ["status", "visibility", "published_at", "updated_at"]
+
+        dataset.save(update_fields=update_fields)
+        create_status_history(dataset, self.request.user, old_status, dataset.status, final_reason)
+        log_dataset_event(
+            dataset,
+            audit_action,
+            actor=self.request.user,
+            details=request_audit_details(
+                self.request,
+                old_status=old_status,
+                new_status=dataset.status,
+                reason=final_reason,
+            ),
+        )
+        return {
+            "dataset_id": dataset.id,
+            "status": dataset.status,
+        }
+
+    @extend_schema(
+        tags=["Dataset Workflow"],
+        operation_id="dataset_admin_bulk_action",
+        summary="Run bulk dataset admin action",
+        description=(
+            "Approve, reject, or publish multiple datasets in one request. "
+            "Only dataset administrators can access this endpoint."
+        ),
+        request=DatasetAdminBulkActionSerializer,
+        responses={
+            200: success_response_schema(
+                "DatasetAdminBulkActionSuccessResponse",
+                DatasetAdminBulkActionResponseSerializer,
+                description="Bulk dataset action processed successfully.",
+            ),
+            **standard_error_responses(
+                "DatasetAdminBulkAction",
+                include_400=True,
+                include_401=True,
+                include_403=True,
+            ),
+        },
+    )
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        action = serializer.validated_data["action"]
+        dataset_ids = serializer.validated_data["dataset_ids"]
+        reason = serializer.validated_data.get("reason", "")
+
+        datasets = self.get_dataset_queryset().filter(id__in=dataset_ids)
+        dataset_map = {dataset.id: dataset for dataset in datasets}
+
+        processed = []
+        failed = []
+        for dataset_id in dataset_ids:
+            dataset = dataset_map.get(dataset_id)
+            if dataset is None:
+                failed.append(
+                    {
+                        "dataset_id": dataset_id,
+                        "error": "Dataset not found.",
+                    }
+                )
+                continue
+
+            try:
+                with transaction.atomic():
+                    processed.append(self.process_dataset_action(dataset, action, reason))
+            except ValidationError as exc:
+                failed.append(
+                    {
+                        "dataset_id": dataset_id,
+                        "error": str(exc.detail[0]) if isinstance(exc.detail, list) else str(exc.detail),
+                    }
+                )
+
+        response_payload = {
+            "action": action,
+            "requested_count": len(dataset_ids),
+            "processed_count": len(processed),
+            "failed_count": len(failed),
+            "processed": processed,
+            "failed": failed,
+        }
+        response_serializer = self.response_serializer_class(response_payload)
+        message = (
+            "Bulk dataset action completed successfully."
+            if not failed
+            else "Bulk dataset action completed with some failures."
+        )
+        return success_response(data=response_serializer.data, message=message)
+
+
 class DatasetDetailView(DatasetBaseView):
     permission_classes = [CanAccessDataset]
 
@@ -936,6 +1083,214 @@ class DatasetPublishView(DatasetBaseView):
         return success_response(
             data=self.serialize_detail(dataset),
             message="Dataset published successfully.",
+        )
+
+
+class DatasetUnpublishView(DatasetBaseView):
+    permission_classes = [CanPublishDataset]
+
+    @extend_schema(
+        tags=["Dataset Workflow"],
+        operation_id="dataset_unpublish",
+        summary="Unpublish dataset",
+        description=(
+            "Unpublish a `published` dataset, remove it from public access, "
+            "and return it to `approved` status."
+        ),
+        parameters=[DATASET_ID_PARAMETER],
+        request=DatasetPublishSerializer,
+        responses={
+            200: success_response_schema(
+                "DatasetUnpublishSuccessResponse",
+                DatasetDetailSerializer,
+                description="Dataset unpublished successfully.",
+            ),
+            **standard_error_responses(
+                "DatasetUnpublish",
+                include_400=True,
+                include_401=True,
+                include_403=True,
+                include_404=True,
+            ),
+        },
+    )
+    def post(self, request, dataset_id):
+        dataset = self.get_object()
+        serializer = DatasetPublishSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        if dataset.status != DatasetStatus.PUBLISHED:
+            raise ValidationError(
+                {"status": ["Only published datasets can be unpublished."]}
+            )
+
+        old_status = dataset.status
+        dataset.status = DatasetStatus.APPROVED
+        dataset.visibility = False
+        dataset.save(update_fields=["status", "visibility", "updated_at"])
+
+        reason = serializer.validated_data.get("reason") or "Unpublished via API."
+        create_status_history(dataset, request.user, old_status, dataset.status, reason)
+        log_dataset_event(
+            dataset,
+            "dataset_unpublished",
+            actor=request.user,
+            details=request_audit_details(
+                request,
+                old_status=old_status,
+                new_status=dataset.status,
+                reason=reason,
+            ),
+        )
+
+        return success_response(
+            data=self.serialize_detail(dataset),
+            message="Dataset unpublished successfully.",
+        )
+
+
+class DatasetRestoreView(DatasetBaseView):
+    permission_classes = [CanRestoreDataset]
+
+    def get_restore_queryset(self):
+        return Dataset.all_objects.select_related(
+            "publisher_user",
+            "category",
+        ).prefetch_related(
+            "metadata",
+            "dataset_tags__tag",
+            "versions__files",
+        )
+
+    def get_object(self):
+        dataset = get_object_or_404(self.get_restore_queryset(), pk=self.kwargs["dataset_id"])
+        self.check_object_permissions(self.request, dataset)
+        return dataset
+
+    @extend_schema(
+        tags=["Datasets"],
+        operation_id="dataset_restore",
+        summary="Restore soft-deleted dataset",
+        description=(
+            "Restore a soft-deleted dataset by clearing `deleted_at`. "
+            "The dataset returns with its previous status and visibility."
+        ),
+        parameters=[DATASET_ID_PARAMETER],
+        request=DatasetRestoreSerializer,
+        responses={
+            200: success_response_schema(
+                "DatasetRestoreSuccessResponse",
+                DatasetDetailSerializer,
+                description="Dataset restored successfully.",
+            ),
+            **standard_error_responses(
+                "DatasetRestore",
+                include_400=True,
+                include_401=True,
+                include_403=True,
+                include_404=True,
+            ),
+        },
+    )
+    def post(self, request, dataset_id):
+        dataset = self.get_object()
+        serializer = DatasetRestoreSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        if not dataset.is_deleted:
+            raise ValidationError(
+                {"dataset": ["Only deleted datasets can be restored."]}
+            )
+
+        dataset.restore()
+
+        reason = serializer.validated_data.get("reason") or "Dataset restored via API."
+        log_dataset_event(
+            dataset,
+            "dataset_restored",
+            actor=request.user,
+            details=request_audit_details(
+                request,
+                status=dataset.status,
+                reason=reason,
+            ),
+        )
+
+        return success_response(
+            data=self.serialize_detail(dataset),
+            message="Dataset restored successfully.",
+        )
+
+
+class DatasetTransferOwnerView(DatasetBaseView):
+    permission_classes = [HasPermission]
+    required_permissions = (
+        "datasets.view_all_dataset",
+        "datasets.change_dataset",
+    )
+
+    @extend_schema(
+        tags=["Datasets"],
+        operation_id="dataset_transfer_owner",
+        summary="Transfer dataset owner",
+        description=(
+            "Transfer dataset ownership to another active user who can manage datasets. "
+            "This also resynchronizes dataset metadata publisher names."
+        ),
+        parameters=[DATASET_ID_PARAMETER],
+        request=DatasetTransferOwnerSerializer,
+        responses={
+            200: success_response_schema(
+                "DatasetTransferOwnerSuccessResponse",
+                DatasetDetailSerializer,
+                description="Dataset owner transferred successfully.",
+            ),
+            **standard_error_responses(
+                "DatasetTransferOwner",
+                include_400=True,
+                include_401=True,
+                include_403=True,
+                include_404=True,
+            ),
+        },
+    )
+    def post(self, request, dataset_id):
+        dataset = self.get_object()
+        serializer = DatasetTransferOwnerSerializer(
+            data=request.data,
+            context={"dataset": dataset},
+        )
+        serializer.is_valid(raise_exception=True)
+
+        new_owner = serializer.validated_data["new_owner"]
+        old_owner = dataset.publisher_user
+        reason = serializer.validated_data.get("reason") or "Dataset owner transferred via API."
+
+        with transaction.atomic():
+            dataset.publisher_user = new_owner
+            dataset.save(update_fields=["publisher_user", "updated_at"])
+
+            for metadata in dataset.metadata.all():
+                metadata.save(update_fields=["publisher_name", "updated_at"])
+
+        log_dataset_event(
+            dataset,
+            "dataset_owner_transferred",
+            actor=request.user,
+            details=request_audit_details(
+                request,
+                status=dataset.status,
+                reason=reason,
+                old_owner_id=str(old_owner.id),
+                old_owner_email=old_owner.email,
+                new_owner_id=str(new_owner.id),
+                new_owner_email=new_owner.email,
+            ),
+        )
+
+        return success_response(
+            data=self.serialize_detail(dataset),
+            message="Dataset owner transferred successfully.",
         )
 
 
@@ -1284,7 +1639,16 @@ class DatasetFileView(DatasetScopedViewSet):
     create_audit_action = "file_uploaded"
     update_audit_action = "file_updated"
     destroy_audit_action = "file_deleted"
-    parser_classes = (MultiPartParser, FormParser)
+    parser_classes = (JSONParser, MultiPartParser, FormParser)
+
+    def get_permissions(self):
+        if self.action == "validate_file":
+            self.required_permissions = (
+                "datasets.view_all_dataset",
+                "datasets.review_dataset",
+            )
+            return [HasPermission()]
+        return super().get_permissions()
 
     def base_queryset(self):
         return DatasetFile.objects.select_related(
@@ -1303,6 +1667,105 @@ class DatasetFileView(DatasetScopedViewSet):
 
     def get_create_save_kwargs(self):
         return {"uploaded_by": self.request.user}
+
+    @extend_schema(
+        tags=["Dataset Files"],
+        operation_id="dataset_file_validate",
+        summary="Validate dataset file",
+        description=(
+            "Re-run validation for a dataset file. "
+            "Only dataset administrators can access this endpoint."
+        ),
+        request=DatasetFileValidateSerializer,
+        responses={
+            200: success_response_schema(
+                "DatasetFileValidateSuccessResponse",
+                DatasetFileSerializer,
+                description="Dataset file validation completed successfully.",
+            ),
+            **standard_error_responses(
+                "DatasetFileValidate",
+                include_400=True,
+                include_401=True,
+                include_403=True,
+                include_404=True,
+            ),
+        },
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="validate",
+        permission_classes=[HasPermission],
+    )
+    def validate_file(self, request, pk=None):
+        dataset_file = self.get_object()
+        serializer = DatasetFileValidateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        inspection = inspect_dataset_file(
+            dataset_file.file,
+            original_name=dataset_file.filename,
+            file_size=dataset_file.file_size,
+        )
+        is_valid = not inspection["errors"]
+        admin_note = serializer.validated_data.get("validation_notes", "").strip()
+
+        if is_valid:
+            validation_notes = admin_note or "Manual validation passed."
+        else:
+            validation_notes = "; ".join(inspection["errors"])
+            if admin_note:
+                validation_notes = f"{validation_notes} Admin note: {admin_note}"
+
+        dataset_file.filename = inspection["filename"] or dataset_file.filename
+        if inspection["file_size"] is not None:
+            dataset_file.file_size = inspection["file_size"]
+        dataset_file.file_format = inspection["file_format"]
+        if inspection["checksum"]:
+            dataset_file.checksum = inspection["checksum"]
+        dataset_file.validation_status = (
+            FileValidationStatus.VALIDATED if is_valid else FileValidationStatus.REJECTED
+        )
+        dataset_file.validated_at = timezone.now()
+        dataset_file.validation_notes = validation_notes
+        dataset_file.is_safe = is_valid
+        dataset_file.save(
+            update_fields=[
+                "filename",
+                "file_size",
+                "file_format",
+                "checksum",
+                "validation_status",
+                "validated_at",
+                "validation_notes",
+                "is_safe",
+                "updated_at",
+            ]
+        )
+
+        log_dataset_event(
+            dataset_file.dataset_version.dataset,
+            "file_validated" if is_valid else "file_validation_rejected",
+            actor=request.user,
+            target=dataset_file,
+            details=request_audit_details(
+                request,
+                filename=dataset_file.filename,
+                validation_status=dataset_file.validation_status,
+                validation_notes=dataset_file.validation_notes,
+                is_safe=dataset_file.is_safe,
+            ),
+        )
+
+        return success_response(
+            data=self.get_serializer(dataset_file).data,
+            message=(
+                "Dataset file validated successfully."
+                if is_valid
+                else "Dataset file validation completed with rejection."
+            ),
+        )
 
     @extend_schema(
         tags=["Dataset Files"],
