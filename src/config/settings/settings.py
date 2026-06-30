@@ -10,11 +10,21 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+from datetime import timedelta
 from pathlib import Path
 from decouple import Csv, config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _normalize_samesite(value):
+    value = (value or "").strip()
+    return {
+        "lax": "Lax",
+        "strict": "Strict",
+        "none": "None",
+    }.get(value.lower(), value)
 
 
 # Quick-start development settings - unsuitable for production
@@ -59,6 +69,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "config.api.middleware.RequestIDMiddleware",
+    "config.api.middleware.FrontendCredentialCorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -168,7 +179,7 @@ AUTH_USER_MODEL = "user_management.User"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "djapps.user_management.api.authentication.VersionedJWTAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -179,7 +190,123 @@ REST_FRAMEWORK = {
 
 SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
+    "ACCESS_TOKEN_LIFETIME": timedelta(
+        minutes=config("JWT_ACCESS_TOKEN_LIFETIME_MINUTES", cast=int, default=15)
+    ),
+    "REFRESH_TOKEN_LIFETIME": timedelta(
+        days=config("JWT_REFRESH_TOKEN_LIFETIME_DAYS", cast=int, default=7)
+    ),
+    "ROTATE_REFRESH_TOKENS": config(
+        "JWT_ROTATE_REFRESH_TOKENS",
+        cast=bool,
+        default=True,
+    ),
+    "BLACKLIST_AFTER_ROTATION": config(
+        "JWT_BLACKLIST_AFTER_ROTATION",
+        cast=bool,
+        default=True,
+    ),
 }
+
+AUTH_ACCESS_COOKIE_NAME = config(
+    "AUTH_ACCESS_COOKIE_NAME",
+    default="smarthub_access_token",
+)
+AUTH_ACCESS_COOKIE_SECURE = config(
+    "AUTH_ACCESS_COOKIE_SECURE",
+    cast=bool,
+    default=not DEBUG,
+)
+AUTH_ACCESS_COOKIE_HTTP_ONLY = True
+AUTH_ACCESS_COOKIE_SAMESITE = _normalize_samesite(
+    config("AUTH_ACCESS_COOKIE_SAMESITE", default="Lax")
+)
+AUTH_ACCESS_COOKIE_PATH = config(
+    "AUTH_ACCESS_COOKIE_PATH",
+    default="/api/v1/",
+)
+AUTH_ACCESS_COOKIE_DOMAIN = (
+    config("AUTH_ACCESS_COOKIE_DOMAIN", default="").strip() or None
+)
+
+AUTH_REFRESH_COOKIE_NAME = config(
+    "AUTH_REFRESH_COOKIE_NAME",
+    default="smarthub_refresh_token",
+)
+AUTH_REFRESH_COOKIE_SECURE = config(
+    "AUTH_REFRESH_COOKIE_SECURE",
+    cast=bool,
+    default=not DEBUG,
+)
+AUTH_REFRESH_COOKIE_HTTP_ONLY = True
+AUTH_REFRESH_COOKIE_SAMESITE = _normalize_samesite(
+    config("AUTH_REFRESH_COOKIE_SAMESITE", default=AUTH_ACCESS_COOKIE_SAMESITE)
+)
+AUTH_REFRESH_COOKIE_PATH = config(
+    "AUTH_REFRESH_COOKIE_PATH",
+    default="/api/v1/auth/",
+)
+AUTH_REFRESH_COOKIE_DOMAIN = (
+    config("AUTH_REFRESH_COOKIE_DOMAIN", default="").strip()
+    or AUTH_ACCESS_COOKIE_DOMAIN
+)
+
+CORS_ALLOWED_ORIGINS = tuple(
+    item.strip()
+    for item in config("CORS_ALLOWED_ORIGINS", default="").split(",")
+    if item.strip()
+)
+CORS_ALLOW_CREDENTIALS = config(
+    "CORS_ALLOW_CREDENTIALS",
+    cast=bool,
+    default=True,
+)
+CORS_ALLOW_HEADERS = (
+    "Accept",
+    "Authorization",
+    "Content-Type",
+    "X-CSRFToken",
+    "X-Request-ID",
+)
+CORS_ALLOW_METHODS = (
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+)
+CORS_EXPOSE_HEADERS = (
+    "X-Request-ID",
+)
+CORS_PREFLIGHT_MAX_AGE = config(
+    "CORS_PREFLIGHT_MAX_AGE",
+    cast=int,
+    default=86400,
+)
+
+CSRF_TRUSTED_ORIGINS = tuple(
+    item.strip()
+    for item in config("CSRF_TRUSTED_ORIGINS", default="").split(",")
+    if item.strip()
+) or CORS_ALLOWED_ORIGINS
+CSRF_COOKIE_NAME = config("CSRF_COOKIE_NAME", default="csrftoken")
+CSRF_COOKIE_SECURE = config(
+    "CSRF_COOKIE_SECURE",
+    cast=bool,
+    default=AUTH_REFRESH_COOKIE_SECURE,
+)
+CSRF_COOKIE_HTTPONLY = False
+CSRF_COOKIE_SAMESITE = _normalize_samesite(
+    config("CSRF_COOKIE_SAMESITE", default=AUTH_REFRESH_COOKIE_SAMESITE)
+)
+CSRF_COOKIE_PATH = config(
+    "CSRF_COOKIE_PATH",
+    default=AUTH_ACCESS_COOKIE_PATH,
+)
+CSRF_COOKIE_DOMAIN = (
+    config("CSRF_COOKIE_DOMAIN", default="").strip() or AUTH_REFRESH_COOKIE_DOMAIN
+)
 
 GITHUB_OAUTH_CLIENT_ID = config("GITHUB_OAUTH_CLIENT_ID", default="")
 GITHUB_OAUTH_CLIENT_SECRET = config("GITHUB_OAUTH_CLIENT_SECRET", default="")
@@ -205,8 +332,9 @@ SPECTACULAR_SETTINGS = {
     'TITLE': 'Smarthub Project API',
     'DESCRIPTION': (
         'APIs for SmartHub. '
-        'Protected endpoints use JWT bearer authentication with the header '
-        '`Authorization: Bearer <access_token>`. '
+        'Protected endpoints accept JWT bearer access tokens with the header '
+        '`Authorization: Bearer <access_token>` or an HttpOnly access-token cookie. '
+        'Access and refresh tokens are issued in HttpOnly cookies. '
         'Successful responses are wrapped as `{success, message, data}` and '
         'errors are wrapped as `{success: false, error: {...}}`.'
     ),

@@ -441,3 +441,5 @@ __marimo__/
 .DS_Store
 
 .vscode
+
+auth-cookie-jwt-tutorial.md
