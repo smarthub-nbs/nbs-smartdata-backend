@@ -4,10 +4,67 @@ from unittest.mock import patch
 from django.contrib.auth.models import Group
 from django.conf import settings
 from django.core import mail
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
+from djapps.datasets.models import Category, Dataset, DatasetAuditLog, DatasetStatus
+from djapps.gateway.models import APIConsumer, APIUsageLog
+from djapps.gateway.services import issue_api_key
 from .models import User
 from .roles import ensure_group_permissions
+
+
+def assert_access_cookie_set(test_case, response):
+    cookie = response.cookies[settings.AUTH_ACCESS_COOKIE_NAME]
+    test_case.assertTrue(cookie.value)
+    test_case.assertEqual(cookie["path"], settings.AUTH_ACCESS_COOKIE_PATH)
+    test_case.assertEqual(cookie["samesite"], settings.AUTH_ACCESS_COOKIE_SAMESITE)
+    test_case.assertEqual(bool(cookie["httponly"]), settings.AUTH_ACCESS_COOKIE_HTTP_ONLY)
+    test_case.assertEqual(bool(cookie["secure"]), settings.AUTH_ACCESS_COOKIE_SECURE)
+
+
+def assert_refresh_cookie_set(test_case, response):
+    cookie = response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]
+    test_case.assertTrue(cookie.value)
+    test_case.assertEqual(cookie["path"], settings.AUTH_REFRESH_COOKIE_PATH)
+    test_case.assertEqual(cookie["samesite"], settings.AUTH_REFRESH_COOKIE_SAMESITE)
+    test_case.assertEqual(bool(cookie["httponly"]), settings.AUTH_REFRESH_COOKIE_HTTP_ONLY)
+    test_case.assertEqual(bool(cookie["secure"]), settings.AUTH_REFRESH_COOKIE_SECURE)
+
+
+def fetch_csrf_token(test_case, client, **extra_headers):
+    response = client.get("/api/v1/auth/csrf/", **extra_headers)
+    test_case.assertEqual(response.status_code, 200)
+    test_case.assertTrue(response.data["success"])
+    return response.data["data"]["csrf_token"], response
+
+
+def assert_refresh_token_rejected(test_case, refresh_token):
+    client = APIClient()
+    client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = refresh_token
+    response = client.post("/api/v1/auth/refresh/", {}, format="json")
+    test_case.assertEqual(response.status_code, 401)
+    test_case.assertFalse(response.data["success"])
+    return response
+
+
+def assert_access_token_rejected(test_case, access_token):
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+    response = client.get("/api/v1/auth/me/")
+    test_case.assertEqual(response.status_code, 401)
+    test_case.assertFalse(response.data["success"])
+    return response
+
+
+def assert_auth_cookies_cleared(test_case, response):
+    test_case.assertEqual(
+        str(response.cookies[settings.AUTH_ACCESS_COOKIE_NAME]["max-age"]),
+        "0",
+    )
+    test_case.assertEqual(
+        str(response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]["max-age"]),
+        "0",
+    )
 
 
 class APIResponseFormatTests(TestCase):
@@ -31,7 +88,9 @@ class APIResponseFormatTests(TestCase):
         self.assertEqual(response.data["message"], "User registered successfully.")
         self.assertEqual(response.data["data"]["email"], "format-test@example.com")
         self.assertIn("access", response.data["data"])
-        self.assertIn("refresh", response.data["data"])
+        self.assertNotIn("refresh", response.data["data"])
+        assert_access_cookie_set(self, response)
+        assert_refresh_cookie_set(self, response)
         created_user = User.objects.get(email="format-test@example.com")
         self.assertIn("user", created_user.groups.values_list("name", flat=True))
 
@@ -93,7 +152,9 @@ class APIResponseFormatTests(TestCase):
         self.assertEqual(response.data["message"], "Login successful.")
         self.assertEqual(response.data["data"]["user"]["email"], "lodyne@example.com")
         self.assertIn("access", response.data["data"])
-        self.assertIn("refresh", response.data["data"])
+        self.assertNotIn("refresh", response.data["data"])
+        assert_access_cookie_set(self, response)
+        assert_refresh_cookie_set(self, response)
         exchange_github_code_for_access_token.assert_called_once_with(
             code="github_temp_code",
             redirect_uri="http://localhost:3000/auth/github/callback",
@@ -149,6 +210,124 @@ class GitHubOAuthSettingsTests(TestCase):
         )
 
 
+class CookieAuthSecurityTests(TestCase):
+    def setUp(self):
+        self.client = APIClient(enforce_csrf_checks=True)
+        self.user = User.objects.create_user(
+            email="csrf-user@example.com",
+            password="password123",
+        )
+
+    def test_csrf_bootstrap_issues_cookie_and_token_metadata(self):
+        csrf_token, response = fetch_csrf_token(self, self.client)
+
+        self.assertTrue(csrf_token)
+        self.assertEqual(response.data["data"]["cookie_name"], settings.CSRF_COOKIE_NAME)
+        self.assertEqual(response.data["data"]["header_name"], "X-CSRFToken")
+        self.assertIn(settings.CSRF_COOKIE_NAME, response.cookies)
+        self.assertEqual(response.cookies[settings.CSRF_COOKIE_NAME]["path"], settings.CSRF_COOKIE_PATH)
+
+    def test_login_requires_csrf_token_for_cookie_auth_flow(self):
+        response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "csrf-user@example.com",
+                "password": "password123",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(response.data["success"])
+        self.assertEqual(response.data["error"]["code"], "permission_denied")
+        self.assertIn("CSRF Failed", response.data["error"]["message"])
+
+        csrf_token, _ = fetch_csrf_token(self, self.client)
+        success_response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "csrf-user@example.com",
+                "password": "password123",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+
+        self.assertEqual(success_response.status_code, 200)
+        self.assertTrue(success_response.data["success"])
+
+    def test_refresh_requires_csrf_token(self):
+        csrf_token, _ = fetch_csrf_token(self, self.client)
+        login_response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "csrf-user@example.com",
+                "password": "password123",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+        self.assertEqual(login_response.status_code, 200)
+
+        missing_csrf_response = self.client.post(
+            "/api/v1/auth/refresh/",
+            {},
+            format="json",
+        )
+        self.assertEqual(missing_csrf_response.status_code, 403)
+        self.assertFalse(missing_csrf_response.data["success"])
+        self.assertIn("CSRF Failed", missing_csrf_response.data["error"]["message"])
+
+        refreshed_csrf_token, _ = fetch_csrf_token(self, self.client)
+        refresh_response = self.client.post(
+            "/api/v1/auth/refresh/",
+            {},
+            format="json",
+            HTTP_X_CSRFTOKEN=refreshed_csrf_token,
+        )
+
+        self.assertEqual(refresh_response.status_code, 200)
+        self.assertTrue(refresh_response.data["success"])
+
+    @override_settings(
+        CORS_ALLOWED_ORIGINS=("http://localhost:3000",),
+        CSRF_TRUSTED_ORIGINS=("http://localhost:3000",),
+    )
+    def test_auth_csrf_endpoint_and_preflight_return_credentialed_cors_headers(self):
+        origin = "http://localhost:3000"
+
+        csrf_response = self.client.get(
+            "/api/v1/auth/csrf/",
+            HTTP_ORIGIN=origin,
+        )
+
+        self.assertEqual(csrf_response.status_code, 200)
+        self.assertEqual(csrf_response.headers["Access-Control-Allow-Origin"], origin)
+        self.assertEqual(
+            csrf_response.headers["Access-Control-Allow-Credentials"],
+            "true",
+        )
+
+        preflight_response = self.client.options(
+            "/api/v1/auth/refresh/",
+            HTTP_ORIGIN=origin,
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+            HTTP_ACCESS_CONTROL_REQUEST_HEADERS="content-type,x-csrftoken",
+        )
+
+        self.assertEqual(preflight_response.status_code, 204)
+        self.assertEqual(preflight_response.headers["Access-Control-Allow-Origin"], origin)
+        self.assertEqual(
+            preflight_response.headers["Access-Control-Allow-Credentials"],
+            "true",
+        )
+        self.assertIn("POST", preflight_response.headers["Access-Control-Allow-Methods"])
+        self.assertEqual(
+            preflight_response.headers["Access-Control-Allow-Headers"],
+            "content-type,x-csrftoken",
+        )
+
+
 class UserManagementFeatureTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -187,6 +366,59 @@ class UserManagementFeatureTests(TestCase):
         self.assertEqual(self.user.first_name, "Updated")
         self.assertFalse(self.user.is_verified)
 
+    def test_me_get_supports_access_cookie_auth_without_bearer_header(self):
+        login_response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "user@example.com",
+                "password": "password123",
+            },
+            format="json",
+        )
+
+        self.assertEqual(login_response.status_code, 200)
+        response = self.client.get("/api/v1/auth/me/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(response.data["data"]["email"], "user@example.com")
+
+    def test_me_patch_supports_access_cookie_auth_with_csrf(self):
+        client = APIClient(enforce_csrf_checks=True)
+        csrf_token, _ = fetch_csrf_token(self, client)
+        login_response = client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "user@example.com",
+                "password": "password123",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+        self.assertEqual(login_response.status_code, 200)
+
+        missing_csrf_response = client.patch(
+            "/api/v1/auth/me/",
+            {"first_name": "Cookie"},
+            format="json",
+        )
+        self.assertEqual(missing_csrf_response.status_code, 403)
+        self.assertFalse(missing_csrf_response.data["success"])
+        self.assertIn("CSRF Failed", missing_csrf_response.data["error"]["message"])
+
+        refreshed_csrf_token, _ = fetch_csrf_token(self, client)
+        response = client.patch(
+            "/api/v1/auth/me/",
+            {"first_name": "Cookie"},
+            format="json",
+            HTTP_X_CSRFTOKEN=refreshed_csrf_token,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.first_name, "Cookie")
+
     def test_change_password_updates_password_hash(self):
         self.client.force_authenticate(user=self.user)
 
@@ -203,8 +435,221 @@ class UserManagementFeatureTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("newpassword123"))
 
+    def test_change_password_revokes_existing_tokens_and_clears_auth_cookies(self):
+        login_response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "user@example.com",
+                "password": "password123",
+            },
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, 200)
+        old_refresh_token = login_response.cookies[
+            settings.AUTH_REFRESH_COOKIE_NAME
+        ].value
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {login_response.data['data']['access']}"
+        )
+        old_access_token = login_response.data["data"]["access"]
+
+        response = self.client.post(
+            "/api/v1/auth/password/change/",
+            {
+                "current_password": "password123",
+                "new_password": "newpassword123",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("newpassword123"))
+        assert_auth_cookies_cleared(self, response)
+        assert_refresh_token_rejected(self, old_refresh_token)
+        assert_access_token_rejected(self, old_access_token)
+
+    def test_login_sets_auth_cookies_and_returns_access_token_only(self):
+        response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "user@example.com",
+                "password": "password123",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        self.assertIn("access", response.data["data"])
+        self.assertNotIn("refresh", response.data["data"])
+        assert_access_cookie_set(self, response)
+        assert_refresh_cookie_set(self, response)
+
+    def test_refresh_uses_refresh_cookie_and_rotates_access_cookie(self):
+        login_response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "user@example.com",
+                "password": "password123",
+            },
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, 200)
+        refresh_cookie = login_response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]
+        self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = refresh_cookie.value
+
+        response = self.client.post(
+            "/api/v1/auth/refresh/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        self.assertIn("access", response.data["data"])
+        self.assertNotIn("refresh", response.data["data"])
+        assert_access_cookie_set(self, response)
+        rotated_cookie = response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]
+        self.assertTrue(rotated_cookie.value)
+        self.assertNotEqual(rotated_cookie.value, refresh_cookie.value)
+
+    def test_refresh_ignores_invalid_access_cookie_when_refresh_cookie_is_valid(self):
+        login_response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "user@example.com",
+                "password": "password123",
+            },
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, 200)
+
+        self.client.cookies[settings.AUTH_ACCESS_COOKIE_NAME] = "invalid-access-token"
+        self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = login_response.cookies[
+            settings.AUTH_REFRESH_COOKIE_NAME
+        ].value
+
+        response = self.client.post(
+            "/api/v1/auth/refresh/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        assert_access_cookie_set(self, response)
+
+    def test_refresh_rotation_blacklists_previous_refresh_cookie(self):
+        login_response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "user@example.com",
+                "password": "password123",
+            },
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, 200)
+        original_refresh_cookie = login_response.cookies[
+            settings.AUTH_REFRESH_COOKIE_NAME
+        ].value
+        self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = original_refresh_cookie
+
+        refresh_response = self.client.post(
+            "/api/v1/auth/refresh/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(refresh_response.status_code, 200)
+        rotated_refresh_cookie = refresh_response.cookies[
+            settings.AUTH_REFRESH_COOKIE_NAME
+        ].value
+        self.assertNotEqual(rotated_refresh_cookie, original_refresh_cookie)
+
+        self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = original_refresh_cookie
+        reused_response = self.client.post(
+            "/api/v1/auth/refresh/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(reused_response.status_code, 401)
+        self.assertFalse(reused_response.data["success"])
+
+    def test_refresh_rejects_body_token_without_refresh_cookie(self):
+        login_response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "user@example.com",
+                "password": "password123",
+            },
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, 200)
+        refresh_cookie = login_response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]
+        self.client.cookies.pop(settings.AUTH_REFRESH_COOKIE_NAME, None)
+
+        response = self.client.post(
+            "/api/v1/auth/refresh/",
+            {
+                "refresh": refresh_cookie.value,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data["success"])
+        self.assertEqual(response.data["error"]["code"], "validation_error")
+        self.assertEqual(
+            response.data["error"]["details"]["fields"]["refresh"],
+            ["Refresh token cookie is missing."],
+        )
+
+    def test_logout_with_cookie_auth_blacklists_refresh_cookie_and_clears_auth_cookies(self):
+        csrf_client = APIClient(enforce_csrf_checks=True)
+        csrf_token, _ = fetch_csrf_token(self, csrf_client)
+        login_response = csrf_client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "user@example.com",
+                "password": "password123",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+        self.assertEqual(login_response.status_code, 200)
+        refreshed_csrf_token, _ = fetch_csrf_token(self, csrf_client)
+
+        response = csrf_client.post(
+            "/api/v1/auth/logout/",
+            {},
+            format="json",
+            HTTP_X_CSRFTOKEN=refreshed_csrf_token,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(response.cookies[settings.AUTH_ACCESS_COOKIE_NAME]["path"], settings.AUTH_ACCESS_COOKIE_PATH)
+        self.assertEqual(response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]["path"], settings.AUTH_REFRESH_COOKIE_PATH)
+        assert_auth_cookies_cleared(self, response)
+
     @patch.object(settings, "FRONTEND_PASSWORD_RESET_URL", "http://localhost:3000/reset-password")
-    def test_password_reset_request_and_confirm(self):
+    def test_password_reset_request_and_confirm_clears_auth_cookies(self):
+        login_response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "user@example.com",
+                "password": "password123",
+            },
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, 200)
+        old_access_token = login_response.data["data"]["access"]
+        old_refresh_token = login_response.cookies[
+            settings.AUTH_REFRESH_COOKIE_NAME
+        ].value
+
         response = self.client.post(
             "/api/v1/auth/password/reset/request/",
             {"email": "user@example.com"},
@@ -227,6 +672,9 @@ class UserManagementFeatureTests(TestCase):
         self.assertEqual(confirm_response.status_code, 200)
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("changedpassword123"))
+        assert_auth_cookies_cleared(self, confirm_response)
+        assert_refresh_token_rejected(self, old_refresh_token)
+        assert_access_token_rejected(self, old_access_token)
 
     @patch.object(
         settings,
@@ -299,6 +747,20 @@ class UserManagementFeatureTests(TestCase):
         )
 
     def test_admin_can_deactivate_and_reactivate_user(self):
+        login_response = self.client.post(
+            "/api/v1/auth/login/",
+            {
+                "email": "user@example.com",
+                "password": "password123",
+            },
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, 200)
+        old_access_token = login_response.data["data"]["access"]
+        old_refresh_token = login_response.cookies[
+            settings.AUTH_REFRESH_COOKIE_NAME
+        ].value
+
         self.client.force_authenticate(user=self.admin)
 
         deactivate_response = self.client.post(
@@ -309,6 +771,8 @@ class UserManagementFeatureTests(TestCase):
         self.assertEqual(deactivate_response.status_code, 200)
         self.user.refresh_from_db()
         self.assertFalse(self.user.is_active)
+        assert_refresh_token_rejected(self, old_refresh_token)
+        assert_access_token_rejected(self, old_access_token)
 
         reactivate_response = self.client.post(
             f"/api/v1/users/{self.user.id}/reactivate/",
@@ -318,6 +782,135 @@ class UserManagementFeatureTests(TestCase):
         self.assertEqual(reactivate_response.status_code, 200)
         self.user.refresh_from_db()
         self.assertTrue(self.user.is_active)
+        assert_access_token_rejected(self, old_access_token)
+
+    def test_admin_dashboard_summary_returns_platform_counts(self):
+        category = Category.objects.create(name="Economy", slug="economy")
+        Dataset.objects.create(
+            publisher_user=self.user,
+            category=category,
+            slug="admin-summary-draft",
+            status=DatasetStatus.DRAFT,
+            visibility=False,
+        )
+        Dataset.objects.create(
+            publisher_user=self.user,
+            category=category,
+            slug="admin-summary-published",
+            status=DatasetStatus.PUBLISHED,
+            visibility=True,
+        )
+        deleted_dataset = Dataset.objects.create(
+            publisher_user=self.user,
+            category=category,
+            slug="admin-summary-deleted",
+            status=DatasetStatus.REJECTED,
+            visibility=False,
+        )
+        deleted_dataset.delete()
+
+        consumer = APIConsumer.objects.create(
+            user=self.user,
+            name="Admin Summary Consumer",
+            consumer_type="developer",
+            email=self.user.email,
+            status="active",
+        )
+        api_key, _ = issue_api_key(consumer=consumer, name="Summary Key")
+        APIUsageLog.objects.create(
+            api_key=api_key,
+            consumer=consumer,
+            endpoint="/api/v1/gateway/datasets/",
+            method="GET",
+            status_code=200,
+        )
+        APIUsageLog.objects.create(
+            api_key=api_key,
+            consumer=consumer,
+            endpoint="/api/v1/gateway/files/data/",
+            method="GET",
+            status_code=500,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get("/api/v1/admin/dashboard/summary/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        payload = response.data["data"]
+        self.assertEqual(payload["users"]["total"], 2)
+        self.assertEqual(payload["datasets"]["total"], 3)
+        self.assertEqual(payload["datasets"]["active"], 2)
+        self.assertEqual(payload["datasets"]["deleted"], 1)
+        self.assertEqual(payload["datasets"]["draft"], 1)
+        self.assertEqual(payload["datasets"]["published"], 1)
+        self.assertEqual(payload["api"]["consumers_total"], 1)
+        self.assertEqual(payload["api"]["api_keys_total"], 1)
+        self.assertEqual(payload["api"]["requests_total"], 2)
+        self.assertEqual(payload["api"]["error_requests_last_24h"], 1)
+
+    def test_admin_activity_returns_recent_dataset_and_api_events(self):
+        category = Category.objects.create(name="Health", slug="health")
+        dataset = Dataset.objects.create(
+            publisher_user=self.user,
+            category=category,
+            slug="admin-activity-dataset",
+            status=DatasetStatus.APPROVED,
+            visibility=False,
+        )
+        DatasetAuditLog.objects.create(
+            dataset=dataset,
+            actor=self.admin,
+            action="dataset_review_approved",
+            target_model="datasets.dataset",
+            target_id=dataset.id,
+            details={"reason": "Approved by admin."},
+        )
+
+        consumer = APIConsumer.objects.create(
+            user=self.user,
+            name="Admin Activity Consumer",
+            consumer_type="developer",
+            email=self.user.email,
+            status="active",
+        )
+        api_key, _ = issue_api_key(consumer=consumer, name="Activity Key")
+        APIUsageLog.objects.create(
+            api_key=api_key,
+            consumer=consumer,
+            endpoint="/api/v1/gateway/datasets/",
+            method="GET",
+            status_code=200,
+            dataset_id=dataset.id,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get("/api/v1/admin/activity/?page_size=10")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        payload = response.data["data"]
+        self.assertGreaterEqual(payload["pagination"]["total_items"], 2)
+        activity_types = {item["activity_type"] for item in payload["items"]}
+        self.assertIn("dataset_audit", activity_types)
+        self.assertIn("api_usage", activity_types)
+        dataset_audit_entry = next(
+            item for item in payload["items"] if item["activity_type"] == "dataset_audit"
+        )
+        self.assertEqual(dataset_audit_entry["dataset_slug"], "admin-activity-dataset")
+        api_usage_entry = next(
+            item for item in payload["items"] if item["activity_type"] == "api_usage"
+        )
+        self.assertEqual(api_usage_entry["dataset_slug"], "admin-activity-dataset")
+
+    def test_admin_activity_and_summary_require_admin_permissions(self):
+        self.client.force_authenticate(user=self.user)
+
+        activity_response = self.client.get("/api/v1/admin/activity/")
+        summary_response = self.client.get("/api/v1/admin/dashboard/summary/")
+
+        self.assertEqual(activity_response.status_code, 403)
+        self.assertEqual(summary_response.status_code, 403)
 
     def _extract_token(self, body):
         match = re.search(r"Token:\s*(\S+)", body)

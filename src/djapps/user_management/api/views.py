@@ -1,14 +1,25 @@
+from datetime import timedelta
+
 from django.contrib.auth.models import Group
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
-from drf_spectacular.utils import OpenApiExample, extend_schema, extend_schema_view
+from django.utils import timezone
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import (
+    OpenApiExample,
+    OpenApiParameter,
+    extend_schema,
+    extend_schema_view,
+)
 from config.api.schema import success_response_schema, standard_error_responses
 from config.api.responses import StandardizedAPIView, StandardizedResponseMixin, success_response
+from djapps.datasets.models import Dataset, DatasetAuditLog, DatasetStatus
+from djapps.gateway.models import APIConsumer, APIKey, APIUsageLog
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
@@ -23,7 +34,11 @@ from ..roles import (
     sync_user_groups,
 )
 from .serializers import (
+    AdminActivityEntrySerializer,
+    AdminActivityListPayloadSerializer,
+    AdminDashboardSummarySerializer,
     AdminUserCreateSerializer,
+    CSRFTokenSerializer,
     AdminUserUpdateSerializer,
     ChangePasswordSerializer,
     CurrentUserSerializer,
@@ -32,7 +47,6 @@ from .serializers import (
     EmptyRequestSerializer,
     GroupDetailSerializer,
     GitHubOAuthCodeExchangeSerializer,
-    LogoutRequestSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
     ProfileUpdateSerializer,
@@ -41,16 +55,23 @@ from .serializers import (
     SocialLoginResponseSerializer,
     StatusResponseSerializer,
     TokenPairSerializer,
-    TokenRefreshRequestSerializer,
     TokenRefreshResponseSerializer,
     UserAdminDetailSerializer,
     UserAdminListSerializer,
     UserGroupAssignmentSerializer,
+    VersionedTokenRefreshSerializer,
     get_tokens_for_user,
 )
+from .auth_cookies import (
+    clear_auth_token_cookies,
+    get_refresh_token_from_request,
+    set_auth_token_cookies,
+)
+from .csrf import build_csrf_response_data, enforce_request_csrf, issue_csrf_token
 from .accounts import (
     EMAIL_VERIFICATION_PURPOSE,
     PASSWORD_RESET_PURPOSE,
+    invalidate_user_tokens,
     mark_user_logged_in,
     resolve_user_action_token,
     send_email_verification_email,
@@ -59,6 +80,73 @@ from .accounts import (
 from .social import exchange_github_code_for_access_token, fetch_provider_json
 from utils.pagination import CustomPagination
 from utils.query import parse_optional_bool
+
+
+ADMIN_REQUIRED_PERMISSIONS = DATASET_ADMIN_PERMISSIONS[1:] + USER_ADMIN_PERMISSIONS
+ADMIN_ANALYTICS_PERMISSIONS = ADMIN_REQUIRED_PERMISSIONS + (
+    "gateway.view_apiconsumer",
+    "gateway.view_apikey",
+    "gateway.view_apiusagelog",
+)
+
+
+def _compact_activity_details(details):
+    return {
+        key: value
+        for key, value in (details or {}).items()
+        if value is not None and value != ""
+    }
+
+
+def _serialize_dataset_activity(log):
+    return {
+        "id": str(log.id),
+        "activity_type": "dataset_audit",
+        "action": log.action,
+        "created_at": log.created_at,
+        "actor_email": getattr(log.actor, "email", None),
+        "dataset_id": str(log.dataset_id) if log.dataset_id else None,
+        "dataset_slug": getattr(log.dataset, "slug", None),
+        "target_model": log.target_model,
+        "target_id": str(log.target_id) if log.target_id else None,
+        "endpoint": None,
+        "method": None,
+        "status_code": None,
+        "summary": f"{log.action} on {log.dataset.slug}",
+        "details": log.details or {},
+    }
+
+
+def _serialize_api_usage_activity(log, dataset_slug_map):
+    actor_email = None
+    if log.consumer_id and log.consumer is not None and getattr(log.consumer, "user", None):
+        actor_email = log.consumer.user.email
+
+    return {
+        "id": str(log.id),
+        "activity_type": "api_usage",
+        "action": "api_request",
+        "created_at": log.created_at,
+        "actor_email": actor_email,
+        "dataset_id": str(log.dataset_id) if log.dataset_id else None,
+        "dataset_slug": dataset_slug_map.get(log.dataset_id),
+        "target_model": "gateway.apiusagelog",
+        "target_id": str(log.id),
+        "endpoint": log.endpoint,
+        "method": log.method,
+        "status_code": log.status_code,
+        "summary": f"{log.method} {log.endpoint} ({log.status_code})",
+        "details": _compact_activity_details(
+            {
+                "consumer_name": getattr(log.consumer, "name", None),
+                "api_key_name": getattr(log.api_key, "name", None),
+                "api_key_prefix": getattr(log.api_key, "prefix", None),
+                "response_time_ms": log.response_time_ms,
+                "error_code": log.error_code,
+                "ip_address": log.ip_address,
+            }
+        ),
+    }
 
 
 def _get_or_create_social_user(email, first_name="", last_name="", is_verified=True):
@@ -96,15 +184,54 @@ def _get_or_create_social_user(email, first_name="", last_name="", is_verified=T
     return user
 
 
-def _social_login_response(user):
+def _social_login_response(request, user):
     mark_user_logged_in(user)
-    return success_response(
+    tokens = get_tokens_for_user(user)
+    issue_csrf_token(request, rotate=True)
+    response = success_response(
         data={
             "user": CurrentUserSerializer(user).data,
-            **get_tokens_for_user(user),
+            "access": tokens["access"],
         },
         message="Login successful.",
     )
+    set_auth_token_cookies(
+        response,
+        access_token=tokens["access"],
+        refresh_token=tokens["refresh"],
+    )
+    return response
+
+
+class CSRFCookieAPIView(StandardizedAPIView):
+    permission_classes = [AllowAny]
+    serializer_class = CSRFTokenSerializer
+
+    @extend_schema(
+        tags=["Authentication"],
+        operation_id="auth_csrf",
+        summary="Issue CSRF token",
+        description=(
+            "Create or refresh the CSRF cookie required for browser-based, "
+            "credentialed authentication requests. The frontend should call "
+            "this endpoint first, then send the returned token in the "
+            "`X-CSRFToken` header on login, register, refresh, social login, "
+            "logout, and other cookie-authenticated mutating requests."
+        ),
+        auth=[],
+        responses={
+            200: success_response_schema(
+                "CSRFCookieSuccessResponse",
+                CSRFTokenSerializer,
+                description="CSRF token issued successfully.",
+            ),
+        },
+    )
+    def get(self, request):
+        return success_response(
+            data=build_csrf_response_data(request),
+            message="CSRF token issued successfully.",
+        )
 
 
 class RegisterAPIView(StandardizedAPIView):
@@ -115,7 +242,12 @@ class RegisterAPIView(StandardizedAPIView):
         tags=["Authentication"],
         operation_id="auth_register",
         summary="Register a user",
-        description="Create a user account with email and password, then return JWT bearer tokens for immediate authenticated use.",
+        description=(
+            "Create a user account with email and password, return a JWT "
+            "access token in the response body, and set both access and "
+            "refresh tokens in HttpOnly cookies. Browser clients must send "
+            "a valid CSRF token."
+        ),
         request=RegisterSerializer,
         auth=[],
         examples=[
@@ -139,18 +271,27 @@ class RegisterAPIView(StandardizedAPIView):
             **standard_error_responses(
                 "Register",
                 include_400=True,
+                include_403=True,
             ),
         },
     )
     def post(self, request):
+        enforce_request_csrf(request)
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        return success_response(
+        issue_csrf_token(request, rotate=True)
+        response = success_response(
             data=RegisterSerializer(user).data,
             message="User registered successfully.",
             status_code=status.HTTP_201_CREATED,
         )
+        set_auth_token_cookies(
+            response,
+            access_token=user.access,
+            refresh_token=user.refresh_token,
+        )
+        return response
 
 
 @extend_schema_view(
@@ -158,7 +299,13 @@ class RegisterAPIView(StandardizedAPIView):
         tags=["Authentication"],
         operation_id="auth_login",
         summary="Login with email and password",
-        description="Exchange valid user credentials for a JWT access token and refresh token. Use the access token as `Authorization: Bearer <access_token>`.",
+        description=(
+            "Exchange valid user credentials for a JWT access token. The "
+            "access and refresh tokens are set in HttpOnly cookies. Clients "
+            "may also use the returned access token as "
+            "`Authorization: Bearer <access_token>`. Browser clients must "
+            "send a valid CSRF token."
+        ),
         request=EmailTokenObtainPairSerializer,
         auth=[],
         examples=[
@@ -175,11 +322,12 @@ class RegisterAPIView(StandardizedAPIView):
             200: success_response_schema(
                 "LoginSuccessResponse",
                 TokenPairSerializer,
-                description="JWT token pair issued successfully.",
+                description="JWT access token issued successfully.",
             ),
             **standard_error_responses(
                 "Login",
                 include_400=True,
+                include_403=True,
                 include_401=True,
             ),
         },
@@ -190,24 +338,36 @@ class LoginAPIView(StandardizedResponseMixin, TokenObtainPairView):
     serializer_class = EmailTokenObtainPairSerializer
     success_message = "Login successful."
 
+    def post(self, request, *args, **kwargs):
+        enforce_request_csrf(request)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        issue_csrf_token(request, rotate=True)
+        response = success_response(
+            data={"access": serializer.validated_data["access"]},
+            message=self.success_message,
+        )
+        set_auth_token_cookies(
+            response,
+            access_token=serializer.validated_data["access"],
+            refresh_token=serializer.validated_data["refresh"],
+        )
+        return response
+
 
 @extend_schema_view(
     post=extend_schema(
         tags=["Authentication"],
         operation_id="auth_refresh",
         summary="Refresh access token",
-        description="Exchange a valid refresh token for a new JWT access token.",
-        request=TokenRefreshRequestSerializer,
+        description=(
+            "Exchange the refresh token stored in the HttpOnly cookie for a "
+            "new JWT access token. The access-token cookie is updated on every "
+            "refresh. If refresh token rotation is enabled, the refresh cookie "
+            "is updated as well. Browser clients must send a valid CSRF token."
+        ),
+        request=EmptyRequestSerializer,
         auth=[],
-        examples=[
-            OpenApiExample(
-                "Refresh Request",
-                value={
-                    "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-                },
-                request_only=True,
-            ),
-        ],
         responses={
             200: success_response_schema(
                 "RefreshSuccessResponse",
@@ -217,6 +377,7 @@ class LoginAPIView(StandardizedResponseMixin, TokenObtainPairView):
             **standard_error_responses(
                 "Refresh",
                 include_400=True,
+                include_403=True,
                 include_401=True,
             ),
         },
@@ -224,52 +385,74 @@ class LoginAPIView(StandardizedResponseMixin, TokenObtainPairView):
 )
 class RefreshAPIView(StandardizedResponseMixin, TokenRefreshView):
     permission_classes = [AllowAny]
+    serializer_class = VersionedTokenRefreshSerializer
     success_message = "Token refreshed successfully."
+
+    def post(self, request, *args, **kwargs):
+        enforce_request_csrf(request)
+        refresh_token = get_refresh_token_from_request(request)
+        serializer = self.get_serializer(data={"refresh": refresh_token})
+        try:
+            serializer.is_valid(raise_exception=True)
+        except TokenError as exc:
+            raise InvalidToken(exc.args[0]) from exc
+        issue_csrf_token(request)
+        response = success_response(
+            data={"access": serializer.validated_data["access"]},
+            message=self.success_message,
+        )
+        set_auth_token_cookies(
+            response,
+            access_token=serializer.validated_data["access"],
+            refresh_token=serializer.validated_data.get("refresh"),
+        )
+        return response
 
 
 class LogoutAPIView(StandardizedAPIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = LogoutRequestSerializer
+    serializer_class = EmptyRequestSerializer
 
     @extend_schema(
         tags=["Authentication"],
         operation_id="auth_logout",
         summary="Logout and blacklist refresh token",
-        description="Invalidate the provided refresh token. The access token used to call this endpoint must still be valid.",
-        request=LogoutRequestSerializer,
-        examples=[
-            OpenApiExample(
-                "Logout Request",
-                value={
-                    "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-                },
-                request_only=True,
-            ),
-        ],
+        description=(
+            "Invalidate the refresh token stored in the HttpOnly cookie and "
+            "clear both authentication cookies from the client. The access "
+            "token used to call this endpoint must still be valid. Browser "
+            "clients must send a valid CSRF token."
+        ),
+        request=EmptyRequestSerializer,
         responses={
             200: success_response_schema(
                 "LogoutSuccessResponse",
-                description="Refresh token blacklisted successfully.",
+                description="Logout completed successfully.",
             ),
             **standard_error_responses(
                 "Logout",
-                include_400=True,
+                include_403=True,
                 include_401=True,
             ),
         },
     )
     def post(self, request):
-        refresh_token = request.data.get("refresh")
+        enforce_request_csrf(request)
+        refresh_token = get_refresh_token_from_request(request, required=False)
+        issue_csrf_token(request, rotate=True)
+        response = success_response(message="Logout successful.")
+        clear_auth_token_cookies(response)
+
         if not refresh_token:
-            raise ValidationError({"refresh": ["This field is required."]})
+            return response
 
         try:
             token = RefreshToken(refresh_token)
             token.blacklist()
         except TokenError:
-            raise ValidationError({"refresh": ["Invalid or expired token."]})
+            return response
 
-        return success_response(message="Logout successful.")
+        return response
 
 
 class GoogleSocialLoginAPIView(StandardizedAPIView):
@@ -280,7 +463,12 @@ class GoogleSocialLoginAPIView(StandardizedAPIView):
         tags=["Authentication"],
         operation_id="auth_social_google",
         summary="Login with Google access token",
-        description="Verify a Google OAuth access token, resolve the user profile, and return a SmartHub JWT token pair.",
+        description=(
+            "Verify a Google OAuth access token, resolve the user profile, "
+            "return a SmartHub JWT access token in the response body, and set "
+            "access and refresh tokens in HttpOnly cookies. Browser clients "
+            "must send a valid CSRF token."
+        ),
         request=SocialLoginSerializer,
         auth=[],
         examples=[
@@ -301,10 +489,12 @@ class GoogleSocialLoginAPIView(StandardizedAPIView):
             **standard_error_responses(
                 "GoogleSocialLogin",
                 include_400=True,
+                include_403=True,
             ),
         },
     )
     def post(self, request):
+        enforce_request_csrf(request)
         serializer = SocialLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -327,7 +517,7 @@ class GoogleSocialLoginAPIView(StandardizedAPIView):
             last_name=profile.get("family_name", ""),
             is_verified=True,
         )
-        return _social_login_response(user)
+        return _social_login_response(request, user)
 
 
 class GitHubSocialLoginAPIView(StandardizedAPIView):
@@ -340,9 +530,11 @@ class GitHubSocialLoginAPIView(StandardizedAPIView):
         summary="Login with GitHub OAuth authorization code",
         description=(
             "Exchange a GitHub OAuth authorization code for a GitHub user access "
-            "token, resolve the user's verified primary email, and return a "
-            "SmartHub JWT token pair. The frontend must validate the GitHub "
-            "`state` value before calling this endpoint."
+            "token, resolve the user's verified primary email, return a "
+            "SmartHub JWT access token in the response body, and set access "
+            "and refresh tokens in HttpOnly cookies. The frontend must "
+            "validate the GitHub `state` value before calling this endpoint. "
+            "Browser clients must send a valid CSRF token."
         ),
         request=GitHubOAuthCodeExchangeSerializer,
         auth=[],
@@ -366,10 +558,12 @@ class GitHubSocialLoginAPIView(StandardizedAPIView):
             **standard_error_responses(
                 "GitHubSocialLogin",
                 include_400=True,
+                include_403=True,
             ),
         },
     )
     def post(self, request):
+        enforce_request_csrf(request)
         serializer = GitHubOAuthCodeExchangeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         access_token = exchange_github_code_for_access_token(
@@ -422,7 +616,7 @@ class GitHubSocialLoginAPIView(StandardizedAPIView):
             last_name=name_parts[1] if len(name_parts) > 1 else "",
             is_verified=True,
         )
-        return _social_login_response(user)
+        return _social_login_response(request, user)
 
 
 class PublicPingAPIView(StandardizedAPIView):
@@ -455,7 +649,11 @@ class MeAPIView(StandardizedAPIView):
         tags=["Authentication"],
         operation_id="auth_me",
         summary="Get current user",
-        description="Return the authenticated user's profile, roles, and effective permissions.",
+        description=(
+            "Return the authenticated user's profile, roles, and effective "
+            "permissions. Authentication may be supplied by bearer token or "
+            "access-token cookie."
+        ),
         responses={
             200: success_response_schema(
                 "CurrentUserSuccessResponse",
@@ -476,7 +674,11 @@ class MeAPIView(StandardizedAPIView):
         tags=["Authentication"],
         operation_id="auth_me_update",
         summary="Update current user profile",
-        description="Update the authenticated user's profile details. Changing the email address marks the account as unverified until email verification is completed again.",
+        description=(
+            "Update the authenticated user's profile details. Changing the "
+            "email address marks the account as unverified until email "
+            "verification is completed again."
+        ),
         request=ProfileUpdateSerializer,
         responses={
             200: success_response_schema(
@@ -523,7 +725,10 @@ class RegisteredUserAPIView(StandardizedAPIView):
         tags=["Authorization"],
         operation_id="authorization_registered_user",
         summary="Registered user access check",
-        description="Simple protected endpoint to verify that a valid JWT bearer token grants access to authenticated users.",
+        description=(
+            "Simple protected endpoint to verify that a valid bearer token or "
+            "access-token cookie grants access to authenticated users."
+        ),
         responses={
             200: success_response_schema(
                 "RegisteredUserSuccessResponse",
@@ -619,10 +824,7 @@ class ResearcherAPIView(StandardizedAPIView):
 
 class AdminAPIView(StandardizedAPIView):
     permission_classes = [HasPermission]
-    required_permissions = (
-        DATASET_ADMIN_PERMISSIONS[1:]
-        + USER_ADMIN_PERMISSIONS
-    )
+    required_permissions = ADMIN_REQUIRED_PERMISSIONS
     serializer_class = StatusResponseSerializer
 
     @extend_schema(
@@ -644,6 +846,188 @@ class AdminAPIView(StandardizedAPIView):
     )
     def get(self, request):
         return Response({"status": "ok", "scope": "admin"})
+
+
+class AdminAnalyticsBaseAPIView(StandardizedAPIView):
+    permission_classes = [HasPermission]
+    required_permissions = ADMIN_ANALYTICS_PERMISSIONS
+    pagination_class = CustomPagination
+
+    def paginate_queryset(self, queryset):
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, self.request, view=self)
+        return paginator, page
+
+
+class AdminActivityAPIView(AdminAnalyticsBaseAPIView):
+    serializer_class = AdminActivityEntrySerializer
+
+    @extend_schema(
+        tags=["Administration"],
+        operation_id="admin_activity_list",
+        summary="List admin activity",
+        description=(
+            "Return recent administrative activity across dataset audit logs and "
+            "gateway API usage logs."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="type",
+                type=OpenApiTypes.STR,
+                enum=["dataset_audit", "api_usage"],
+                location=OpenApiParameter.QUERY,
+                description="Filter activity by source type.",
+            ),
+            OpenApiParameter(
+                name="page",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                description="Page number.",
+            ),
+            OpenApiParameter(
+                name="page_size",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                description="Number of items per page. Maximum 100.",
+            ),
+        ],
+        responses={
+            200: success_response_schema(
+                "AdminActivityListSuccessResponse",
+                AdminActivityListPayloadSerializer,
+                description="Admin activity returned successfully.",
+            ),
+            **standard_error_responses(
+                "AdminActivityList",
+                include_400=True,
+                include_401=True,
+                include_403=True,
+            ),
+        },
+    )
+    def get(self, request):
+        activity_type = request.query_params.get("type")
+        if activity_type and activity_type not in {"dataset_audit", "api_usage"}:
+            raise ValidationError(
+                {"type": ["Supported values are dataset_audit and api_usage."]}
+            )
+
+        entries = []
+        if activity_type in {None, "dataset_audit"}:
+            dataset_logs = DatasetAuditLog.objects.select_related(
+                "dataset",
+                "actor",
+            ).order_by("-created_at", "-id")
+            entries.extend(_serialize_dataset_activity(log) for log in dataset_logs)
+
+        if activity_type in {None, "api_usage"}:
+            usage_logs = list(
+                APIUsageLog.objects.select_related(
+                    "api_key",
+                    "consumer__user",
+                ).order_by("-created_at", "-id")
+            )
+            dataset_slug_map = {
+                dataset.id: dataset.slug
+                for dataset in Dataset.all_objects.filter(
+                    id__in={log.dataset_id for log in usage_logs if log.dataset_id}
+                )
+            }
+            entries.extend(
+                _serialize_api_usage_activity(log, dataset_slug_map)
+                for log in usage_logs
+            )
+
+        entries.sort(
+            key=lambda item: (item["created_at"], item["id"]),
+            reverse=True,
+        )
+        paginator, page = self.paginate_queryset(entries)
+        serializer = self.serializer_class(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class AdminDashboardSummaryAPIView(AdminAnalyticsBaseAPIView):
+    serializer_class = AdminDashboardSummarySerializer
+
+    @extend_schema(
+        tags=["Administration"],
+        operation_id="admin_dashboard_summary",
+        summary="Get admin dashboard summary",
+        description=(
+            "Return high-level administration counts for users, datasets, "
+            "API consumers, API keys, and recent platform activity."
+        ),
+        responses={
+            200: success_response_schema(
+                "AdminDashboardSummarySuccessResponse",
+                AdminDashboardSummarySerializer,
+                description="Admin dashboard summary returned successfully.",
+            ),
+            **standard_error_responses(
+                "AdminDashboardSummary",
+                include_401=True,
+                include_403=True,
+            ),
+        },
+    )
+    def get(self, request):
+        last_24h = timezone.now() - timedelta(hours=24)
+
+        user_summary = User.objects.aggregate(
+            total=Count("id"),
+            active=Count("id", filter=Q(is_active=True)),
+            inactive=Count("id", filter=Q(is_active=False)),
+            verified=Count("id", filter=Q(is_verified=True)),
+            staff=Count("id", filter=Q(is_staff=True)),
+            superusers=Count("id", filter=Q(is_superuser=True)),
+        )
+
+        active_datasets = Dataset.objects
+        dataset_summary = {
+            "total": Dataset.all_objects.count(),
+            "active": active_datasets.count(),
+            "deleted": Dataset.all_objects.filter(deleted_at__isnull=False).count(),
+            "draft": active_datasets.filter(status=DatasetStatus.DRAFT).count(),
+            "in_review": active_datasets.filter(status=DatasetStatus.IN_REVIEW).count(),
+            "approved": active_datasets.filter(status=DatasetStatus.APPROVED).count(),
+            "rejected": active_datasets.filter(status=DatasetStatus.REJECTED).count(),
+            "published": active_datasets.filter(status=DatasetStatus.PUBLISHED).count(),
+        }
+
+        api_summary = {
+            "consumers_total": APIConsumer.objects.count(),
+            "consumers_active": APIConsumer.objects.filter(status="active").count(),
+            "api_keys_total": APIKey.objects.count(),
+            "api_keys_active": APIKey.objects.filter(status="active").count(),
+            "api_keys_revoked": APIKey.objects.filter(status="revoked").count(),
+            "api_keys_expired": APIKey.objects.filter(status="expired").count(),
+            "requests_total": APIUsageLog.objects.count(),
+            "requests_last_24h": APIUsageLog.objects.filter(created_at__gte=last_24h).count(),
+            "error_requests_last_24h": APIUsageLog.objects.filter(
+                created_at__gte=last_24h,
+                status_code__gte=400,
+            ).count(),
+        }
+
+        activity_summary = {
+            "dataset_audit_logs_total": DatasetAuditLog.objects.count(),
+            "api_usage_logs_total": APIUsageLog.objects.count(),
+            "last_24h_total": (
+                DatasetAuditLog.objects.filter(created_at__gte=last_24h).count()
+                + APIUsageLog.objects.filter(created_at__gte=last_24h).count()
+            ),
+        }
+
+        serializer = self.serializer_class(
+            {
+                "users": user_summary,
+                "datasets": dataset_summary,
+                "api": api_summary,
+                "acBativity": activity_summary,
+            }
+        )
+        return success_response(data=serializer.data)
 
 
 class PermissionProtectedAPIView(StandardizedAPIView):
@@ -680,7 +1064,11 @@ class PasswordChangeAPIView(StandardizedAPIView):
         tags=["Authentication"],
         operation_id="auth_password_change",
         summary="Change password",
-        description="Change the authenticated user's password by providing the current password and a new password.",
+        description=(
+            "Change the authenticated user's password by providing the current "
+            "password and a new password. All outstanding refresh tokens and "
+            "existing access tokens for that user are revoked."
+        ),
         request=ChangePasswordSerializer,
         responses={
             200: success_response_schema(
@@ -707,7 +1095,11 @@ class PasswordChangeAPIView(StandardizedAPIView):
 
         request.user.set_password(serializer.validated_data["new_password"])
         request.user.save(update_fields=["password"])
-        return success_response(message="Password changed successfully.")
+        invalidate_user_tokens(request.user)
+        issue_csrf_token(request, rotate=True)
+        response = success_response(message="Password changed successfully.")
+        clear_auth_token_cookies(response)
+        return response
 
 
 class PasswordResetRequestAPIView(StandardizedAPIView):
@@ -756,7 +1148,11 @@ class PasswordResetConfirmAPIView(StandardizedAPIView):
         tags=["Authentication"],
         operation_id="auth_password_reset_confirm",
         summary="Confirm password reset",
-        description="Complete a password reset by submitting a valid password reset token and a new password.",
+        description=(
+            "Complete a password reset by submitting a valid password reset "
+            "token and a new password. All outstanding refresh tokens and "
+            "existing access tokens for that user are revoked."
+        ),
         request=PasswordResetConfirmSerializer,
         auth=[],
         responses={
@@ -783,7 +1179,11 @@ class PasswordResetConfirmAPIView(StandardizedAPIView):
 
         user.set_password(serializer.validated_data["new_password"])
         user.save(update_fields=["password"])
-        return success_response(message="Password reset successfully.")
+        invalidate_user_tokens(user)
+        issue_csrf_token(request, rotate=True)
+        response = success_response(message="Password reset successfully.")
+        clear_auth_token_cookies(response)
+        return response
 
 
 class EmailVerificationRequestAPIView(StandardizedAPIView):
@@ -1055,7 +1455,11 @@ class UserDeactivateAPIView(UserManagementBaseAPIView):
         tags=["Authorization"],
         operation_id="user_admin_deactivate",
         summary="Deactivate user",
-        description="Deactivate a user account without deleting the underlying user record.",
+        description=(
+            "Deactivate a user account without deleting the underlying user "
+            "record. All outstanding refresh tokens and existing access tokens "
+            "for that user are revoked."
+        ),
         request=EmptyRequestSerializer,
         responses={
             200: success_response_schema(
@@ -1078,6 +1482,7 @@ class UserDeactivateAPIView(UserManagementBaseAPIView):
             raise ValidationError("You cannot deactivate your own account.")
 
         if not user.is_active:
+            invalidate_user_tokens(user)
             return success_response(
                 data=UserAdminDetailSerializer(user).data,
                 message="User is already inactive.",
@@ -1085,6 +1490,7 @@ class UserDeactivateAPIView(UserManagementBaseAPIView):
 
         user.is_active = False
         user.save(update_fields=["is_active"])
+        invalidate_user_tokens(user)
         return success_response(
             data=UserAdminDetailSerializer(user).data,
             message="User deactivated successfully.",

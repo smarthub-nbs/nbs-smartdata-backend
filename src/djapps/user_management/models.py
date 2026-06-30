@@ -47,6 +47,7 @@ class User(AbstractUser, BaseModel):
     email = models.EmailField(unique=True)
     is_verified = models.BooleanField(default=False)
     last_login_at = models.DateTimeField(blank=True, null=True)
+    token_version = models.PositiveIntegerField(default=0)
 
 
     objects = CustomUserManager()

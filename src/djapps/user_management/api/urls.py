@@ -2,6 +2,9 @@ from django.urls import path
 
 from .views import (
     AdminAPIView,
+    AdminActivityAPIView,
+    AdminDashboardSummaryAPIView,
+    CSRFCookieAPIView,
     DeveloperAPIView,
     EmailVerificationConfirmAPIView,
     EmailVerificationRequestAPIView,
@@ -33,6 +36,7 @@ prefix = "api/v1/"
 
 urlpatterns = [
     path("ping/", PublicPingAPIView.as_view(), name="api-ping"),
+    path("auth/csrf/", CSRFCookieAPIView.as_view(), name="api-auth-csrf"),
     path("auth/register/", RegisterAPIView.as_view(), name="api-auth-register"),
     path("auth/login/", LoginAPIView.as_view(), name="api-auth-login"),
     path(
@@ -97,5 +101,11 @@ urlpatterns = [
     path("developer/", DeveloperAPIView.as_view(), name="api-developer"),
     path("researcher/", ResearcherAPIView.as_view(), name="api-researcher"),
     path("admin/", AdminAPIView.as_view(), name="api-admin"),
+    path("admin/activity/", AdminActivityAPIView.as_view(), name="api-admin-activity"),
+    path(
+        "admin/dashboard/summary/",
+        AdminDashboardSummaryAPIView.as_view(),
+        name="api-admin-dashboard-summary",
+    ),
     path("permission/", PermissionProtectedAPIView.as_view(), name="api-permission"),
 ]

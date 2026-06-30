@@ -2,15 +2,22 @@ from django.contrib.auth.models import Group
 from django.contrib.auth.password_validation import validate_password
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework_simplejwt.serializers import (
+    TokenObtainPairSerializer,
+    TokenRefreshSerializer,
+)
 
 from ..models import User
 from .accounts import mark_user_logged_in
 from ..roles import sync_user_groups
 
 
+TOKEN_VERSION_CLAIM = "token_version"
+
+
 def get_tokens_for_user(user):
-    refresh = TokenObtainPairSerializer.get_token(user)
+    refresh = EmailTokenObtainPairSerializer.get_token(user)
     return {
         "access": str(refresh.access_token),
         "refresh": str(refresh),
@@ -22,6 +29,12 @@ def normalize_email_value(value):
 
 
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token[TOKEN_VERSION_CLAIM] = user.token_version
+        return token
+
     def validate(self, attrs):
         username_field = self.username_field
         if attrs.get(username_field):
@@ -35,7 +48,6 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
     access = serializers.CharField(read_only=True)
-    refresh = serializers.CharField(read_only=True)
 
     class Meta:
         model = User
@@ -46,7 +58,6 @@ class RegisterSerializer(serializers.ModelSerializer):
             "first_name",
             "last_name",
             "access",
-            "refresh",
         )
 
     def validate_email(self, value):
@@ -64,7 +75,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         user = User.objects.create_user(password=password, **validated_data)
         tokens = get_tokens_for_user(user)
         user.access = tokens["access"]
-        user.refresh = tokens["refresh"]
+        user.refresh_token = tokens["refresh"]
         mark_user_logged_in(user)
         return user
 
@@ -99,7 +110,6 @@ class CurrentUserSerializer(serializers.ModelSerializer):
 class SocialLoginSerializer(serializers.Serializer):
     access_token = serializers.CharField(write_only=True)
     access = serializers.CharField(read_only=True)
-    refresh = serializers.CharField(read_only=True)
     user = CurrentUserSerializer(read_only=True)
 
 
@@ -108,27 +118,57 @@ class GitHubOAuthCodeExchangeSerializer(serializers.Serializer):
     redirect_uri = serializers.URLField(write_only=True)
     code_verifier = serializers.CharField(write_only=True, min_length=43, max_length=128)
     access = serializers.CharField(read_only=True)
-    refresh = serializers.CharField(read_only=True)
     user = CurrentUserSerializer(read_only=True)
 
 
 class TokenPairSerializer(serializers.Serializer):
     access = serializers.CharField(read_only=True)
-    refresh = serializers.CharField(read_only=True)
 
 
 class TokenRefreshRequestSerializer(serializers.Serializer):
     refresh = serializers.CharField()
 
 
+class VersionedTokenRefreshSerializer(TokenRefreshSerializer):
+    def validate(self, attrs):
+        self._validate_token_version(attrs["refresh"])
+        return super().validate(attrs)
+
+    def _validate_token_version(self, refresh_token):
+        refresh = self.token_class(refresh_token)
+        user = User.objects.filter(pk=refresh.payload.get("user_id")).first()
+        if user is None:
+            raise AuthenticationFailed("User not found.", code="user_not_found")
+
+        token_version = refresh.payload.get(TOKEN_VERSION_CLAIM, 0)
+        try:
+            token_version = int(token_version)
+        except (TypeError, ValueError) as exc:
+            raise AuthenticationFailed(
+                "Token contained an invalid version claim.",
+                code="token_not_valid",
+            ) from exc
+
+        if token_version != user.token_version:
+            raise AuthenticationFailed(
+                "Token has been revoked.",
+                code="token_revoked",
+            )
+
+
 class TokenRefreshResponseSerializer(serializers.Serializer):
     access = serializers.CharField(read_only=True)
+
+
+class CSRFTokenSerializer(serializers.Serializer):
+    csrf_token = serializers.CharField(read_only=True)
+    cookie_name = serializers.CharField(read_only=True)
+    header_name = serializers.CharField(read_only=True)
 
 
 class SocialLoginResponseSerializer(serializers.Serializer):
     user = CurrentUserSerializer(read_only=True)
     access = serializers.CharField(read_only=True)
-    refresh = serializers.CharField(read_only=True)
 
 
 class LogoutRequestSerializer(serializers.Serializer):
@@ -219,6 +259,84 @@ class GroupDetailSerializer(serializers.ModelSerializer):
             f"{permission.content_type.app_label}.{permission.codename}"
             for permission in obj.permissions.all()
         )
+
+
+class PaginationMetaSerializer(serializers.Serializer):
+    page = serializers.IntegerField(read_only=True)
+    page_size = serializers.IntegerField(read_only=True)
+    total_pages = serializers.IntegerField(read_only=True)
+    total_items = serializers.IntegerField(read_only=True)
+    has_next = serializers.BooleanField(read_only=True)
+    has_previous = serializers.BooleanField(read_only=True)
+    next = serializers.CharField(read_only=True, allow_null=True)
+    previous = serializers.CharField(read_only=True, allow_null=True)
+
+
+class AdminActivityEntrySerializer(serializers.Serializer):
+    id = serializers.CharField(read_only=True)
+    activity_type = serializers.CharField(read_only=True)
+    action = serializers.CharField(read_only=True)
+    created_at = serializers.DateTimeField(read_only=True)
+    actor_email = serializers.CharField(read_only=True, allow_null=True)
+    dataset_id = serializers.CharField(read_only=True, allow_null=True)
+    dataset_slug = serializers.CharField(read_only=True, allow_null=True)
+    target_model = serializers.CharField(read_only=True, allow_null=True)
+    target_id = serializers.CharField(read_only=True, allow_null=True)
+    endpoint = serializers.CharField(read_only=True, allow_null=True)
+    method = serializers.CharField(read_only=True, allow_null=True)
+    status_code = serializers.IntegerField(read_only=True, allow_null=True)
+    summary = serializers.CharField(read_only=True)
+    details = serializers.JSONField(read_only=True, allow_null=True)
+
+
+class AdminActivityListPayloadSerializer(serializers.Serializer):
+    items = AdminActivityEntrySerializer(many=True, read_only=True)
+    pagination = PaginationMetaSerializer(read_only=True)
+
+
+class AdminDashboardUserSummarySerializer(serializers.Serializer):
+    total = serializers.IntegerField(read_only=True)
+    active = serializers.IntegerField(read_only=True)
+    inactive = serializers.IntegerField(read_only=True)
+    verified = serializers.IntegerField(read_only=True)
+    staff = serializers.IntegerField(read_only=True)
+    superusers = serializers.IntegerField(read_only=True)
+
+
+class AdminDashboardDatasetSummarySerializer(serializers.Serializer):
+    total = serializers.IntegerField(read_only=True)
+    active = serializers.IntegerField(read_only=True)
+    deleted = serializers.IntegerField(read_only=True)
+    draft = serializers.IntegerField(read_only=True)
+    in_review = serializers.IntegerField(read_only=True)
+    approved = serializers.IntegerField(read_only=True)
+    rejected = serializers.IntegerField(read_only=True)
+    published = serializers.IntegerField(read_only=True)
+
+
+class AdminDashboardAPISummarySerializer(serializers.Serializer):
+    consumers_total = serializers.IntegerField(read_only=True)
+    consumers_active = serializers.IntegerField(read_only=True)
+    api_keys_total = serializers.IntegerField(read_only=True)
+    api_keys_active = serializers.IntegerField(read_only=True)
+    api_keys_revoked = serializers.IntegerField(read_only=True)
+    api_keys_expired = serializers.IntegerField(read_only=True)
+    requests_total = serializers.IntegerField(read_only=True)
+    requests_last_24h = serializers.IntegerField(read_only=True)
+    error_requests_last_24h = serializers.IntegerField(read_only=True)
+
+
+class AdminDashboardActivitySummarySerializer(serializers.Serializer):
+    dataset_audit_logs_total = serializers.IntegerField(read_only=True)
+    api_usage_logs_total = serializers.IntegerField(read_only=True)
+    last_24h_total = serializers.IntegerField(read_only=True)
+
+
+class AdminDashboardSummarySerializer(serializers.Serializer):
+    users = AdminDashboardUserSummarySerializer(read_only=True)
+    datasets = AdminDashboardDatasetSummarySerializer(read_only=True)
+    api = AdminDashboardAPISummarySerializer(read_only=True)
+    activity = AdminDashboardActivitySummarySerializer(read_only=True)
 
 
 class UserAdminListSerializer(serializers.ModelSerializer):
