@@ -59,6 +59,26 @@ Smoke-test the public API endpoint while the server is running:
 curl http://127.0.0.1:8000/api/v1/ping/
 ```
 
+## Celery
+
+Start Redis locally:
+
+```bash
+docker compose up -d redis
+```
+
+Start a Celery worker:
+
+```bash
+uv run celery -A config worker -l info
+```
+
+Run a quick probe task from the Django shell:
+
+```bash
+uv run python manage.py shell -c "from djapps.datasets.tasks import bulk_action_probe; print(bulk_action_probe.delay(action='approve', dataset_ids=['1', '2']).id)"
+```
+
 ## Database And Migrations
 
 Create migrations after changing models:
