@@ -131,6 +131,10 @@ AUTH_PASSWORD_VALIDATORS = [
     },
     {
         "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {"min_length": 8},
+    },
+    {
+        "NAME": "djapps.user_management.password_validators.StrongPasswordValidator",
     },
     {
         "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
@@ -315,6 +319,53 @@ GITHUB_OAUTH_ALLOWED_REDIRECT_URIS = tuple(
     for item in config("GITHUB_OAUTH_ALLOWED_REDIRECT_URIS", default="").split(",")
     if item.strip()
 )
+
+CELERY_BROKER_URL = config(
+    "CELERY_BROKER_URL",
+    default="redis://localhost:6379/0",
+)
+CELERY_RESULT_BACKEND = config(
+    "CELERY_RESULT_BACKEND",
+    default=CELERY_BROKER_URL,
+)
+CELERY_ACCEPT_CONTENT = ("json",)
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = config(
+    "CELERY_TASK_TRACK_STARTED",
+    cast=bool,
+    default=True,
+)
+CELERY_TASK_ALWAYS_EAGER = config(
+    "CELERY_TASK_ALWAYS_EAGER",
+    cast=bool,
+    default=False,
+)
+CELERY_TASK_EAGER_PROPAGATES = config(
+    "CELERY_TASK_EAGER_PROPAGATES",
+    cast=bool,
+    default=False,
+)
+CELERY_TASK_DEFAULT_QUEUE = config(
+    "CELERY_TASK_DEFAULT_QUEUE",
+    default="default",
+)
+CELERY_WORKER_PREFETCH_MULTIPLIER = config(
+    "CELERY_WORKER_PREFETCH_MULTIPLIER",
+    cast=int,
+    default=1,
+)
+CELERY_TASK_TIME_LIMIT = config(
+    "CELERY_TASK_TIME_LIMIT",
+    cast=int,
+    default=1800,
+)
+CELERY_TASK_SOFT_TIME_LIMIT = config(
+    "CELERY_TASK_SOFT_TIME_LIMIT",
+    cast=int,
+    default=1500,
+)
 PASSWORD_RESET_TOKEN_MAX_AGE = config(
     "PASSWORD_RESET_TOKEN_MAX_AGE",
     cast=int,
@@ -350,6 +401,8 @@ SPECTACULAR_SETTINGS = {
         'DatasetWorkflowStatusEnum': 'djapps.datasets.models.DatasetStatus.CHOICES',
         'APIConsumerStatusEnum': 'djapps.gateway.models.APIConsumer.STATUS_CHOICES',
         'APIKeyStatusEnum': 'djapps.gateway.models.APIKey.STATUS_CHOICES',
+        'DatasetBulkActionEnum': 'djapps.datasets.serializers.DATASET_ADMIN_BULK_ACTION_CHOICES',
+        'DatasetReviewActionEnum': 'djapps.datasets.serializers.DATASET_REVIEW_ACTION_CHOICES',
     },
     'TAGS': [
         {'name': 'Authentication', 'description': 'JWT and social authentication endpoints.'},
