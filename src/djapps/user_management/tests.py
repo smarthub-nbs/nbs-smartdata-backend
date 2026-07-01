@@ -1,9 +1,11 @@
 import re
+import uuid
 from unittest.mock import patch
 
 from django.contrib.auth.models import Group
 from django.conf import settings
 from django.core import mail
+from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 from djapps.datasets.models import Category, Dataset, DatasetAuditLog, DatasetStatus
@@ -93,6 +95,30 @@ class APIResponseFormatTests(TestCase):
         assert_refresh_cookie_set(self, response)
         created_user = User.objects.get(email="format-test@example.com")
         self.assertIn("user", created_user.groups.values_list("name", flat=True))
+
+    def test_register_rejects_password_that_does_not_meet_strength_policy(self):
+        response = self.client.post(
+            "/api/v1/auth/register/",
+            {
+                "email": "weak-password@example.com",
+                "password": "alllowercase",
+                "first_name": "Weak",
+                "last_name": "Password",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data["success"])
+        self.assertEqual(response.data["error"]["code"], "validation_error")
+        self.assertCountEqual(
+            response.data["error"]["details"]["fields"]["password"],
+            [
+                "Password must contain at least one uppercase letter.",
+                "Password must contain at least one number.",
+                "Password must contain at least one special character.",
+            ],
+        )
 
     def test_validation_errors_include_request_id_and_standard_structure(self):
         response = self.client.post(
@@ -210,12 +236,30 @@ class GitHubOAuthSettingsTests(TestCase):
         )
 
 
+class PasswordManagerPolicyTests(TestCase):
+    def test_create_user_rejects_weak_password(self):
+        with self.assertRaises(ValidationError) as context:
+            User.objects.create_user(
+                email="manager-weak@example.com",
+                password="password123",
+            )
+
+        self.assertIn(
+            "Password must contain at least one uppercase letter.",
+            context.exception.messages,
+        )
+        self.assertIn(
+            "Password must contain at least one special character.",
+            context.exception.messages,
+        )
+
+
 class CookieAuthSecurityTests(TestCase):
     def setUp(self):
         self.client = APIClient(enforce_csrf_checks=True)
         self.user = User.objects.create_user(
             email="csrf-user@example.com",
-            password="password123",
+            password="Password123!",
         )
 
     def test_csrf_bootstrap_issues_cookie_and_token_metadata(self):
@@ -232,7 +276,7 @@ class CookieAuthSecurityTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "csrf-user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
         )
@@ -247,7 +291,7 @@ class CookieAuthSecurityTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "csrf-user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
             HTTP_X_CSRFTOKEN=csrf_token,
@@ -262,7 +306,7 @@ class CookieAuthSecurityTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "csrf-user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
             HTTP_X_CSRFTOKEN=csrf_token,
@@ -333,13 +377,13 @@ class UserManagementFeatureTests(TestCase):
         self.client = APIClient()
         self.user = User.objects.create_user(
             email="user@example.com",
-            password="password123",
+            password="Password123!",
             first_name="Normal",
             last_name="User",
         )
         self.admin = User.objects.create_superuser(
             email="admin@example.com",
-            password="password123",
+            password="Password123!",
             first_name="Admin",
             last_name="User",
         )
@@ -371,7 +415,7 @@ class UserManagementFeatureTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
         )
@@ -390,7 +434,7 @@ class UserManagementFeatureTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
             HTTP_X_CSRFTOKEN=csrf_token,
@@ -425,22 +469,44 @@ class UserManagementFeatureTests(TestCase):
         response = self.client.post(
             "/api/v1/auth/password/change/",
             {
-                "current_password": "password123",
-                "new_password": "newpassword123",
+                "current_password": "Password123!",
+                "new_password": "NewPassword123!",
             },
             format="json",
         )
 
         self.assertEqual(response.status_code, 200)
         self.user.refresh_from_db()
-        self.assertTrue(self.user.check_password("newpassword123"))
+        self.assertTrue(self.user.check_password("NewPassword123!"))
+
+    def test_change_password_rejects_weak_password(self):
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post(
+            "/api/v1/auth/password/change/",
+            {
+                "current_password": "Password123!",
+                "new_password": "newpassword123",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data["success"])
+        self.assertEqual(
+            response.data["error"]["details"]["fields"]["new_password"],
+            [
+                "Password must contain at least one uppercase letter.",
+                "Password must contain at least one special character.",
+            ],
+        )
 
     def test_change_password_revokes_existing_tokens_and_clears_auth_cookies(self):
         login_response = self.client.post(
             "/api/v1/auth/login/",
             {
                 "email": "user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
         )
@@ -456,15 +522,15 @@ class UserManagementFeatureTests(TestCase):
         response = self.client.post(
             "/api/v1/auth/password/change/",
             {
-                "current_password": "password123",
-                "new_password": "newpassword123",
+                "current_password": "Password123!",
+                "new_password": "NewPassword123!",
             },
             format="json",
         )
 
         self.assertEqual(response.status_code, 200)
         self.user.refresh_from_db()
-        self.assertTrue(self.user.check_password("newpassword123"))
+        self.assertTrue(self.user.check_password("NewPassword123!"))
         assert_auth_cookies_cleared(self, response)
         assert_refresh_token_rejected(self, old_refresh_token)
         assert_access_token_rejected(self, old_access_token)
@@ -474,7 +540,7 @@ class UserManagementFeatureTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
         )
@@ -491,7 +557,7 @@ class UserManagementFeatureTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
         )
@@ -519,7 +585,7 @@ class UserManagementFeatureTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
         )
@@ -545,7 +611,7 @@ class UserManagementFeatureTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
         )
@@ -582,7 +648,7 @@ class UserManagementFeatureTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
         )
@@ -613,7 +679,7 @@ class UserManagementFeatureTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
             HTTP_X_CSRFTOKEN=csrf_token,
@@ -640,7 +706,7 @@ class UserManagementFeatureTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
         )
@@ -664,17 +730,48 @@ class UserManagementFeatureTests(TestCase):
             "/api/v1/auth/password/reset/confirm/",
             {
                 "token": token,
-                "new_password": "changedpassword123",
+                "new_password": "ChangedPassword123!",
             },
             format="json",
         )
 
         self.assertEqual(confirm_response.status_code, 200)
         self.user.refresh_from_db()
-        self.assertTrue(self.user.check_password("changedpassword123"))
+        self.assertTrue(self.user.check_password("ChangedPassword123!"))
         assert_auth_cookies_cleared(self, confirm_response)
         assert_refresh_token_rejected(self, old_refresh_token)
         assert_access_token_rejected(self, old_access_token)
+
+    @patch.object(settings, "FRONTEND_PASSWORD_RESET_URL", "http://localhost:3000/reset-password")
+    def test_password_reset_confirm_rejects_weak_password(self):
+        response = self.client.post(
+            "/api/v1/auth/password/reset/request/",
+            {"email": "user@example.com"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        token = self._extract_token(mail.outbox[0].body)
+
+        confirm_response = self.client.post(
+            "/api/v1/auth/password/reset/confirm/",
+            {
+                "token": token,
+                "new_password": "changedpassword123",
+            },
+            format="json",
+        )
+
+        self.assertEqual(confirm_response.status_code, 400)
+        self.assertFalse(confirm_response.data["success"])
+        self.assertEqual(
+            confirm_response.data["error"]["details"]["fields"]["new_password"],
+            [
+                "Password must contain at least one uppercase letter.",
+                "Password must contain at least one special character.",
+            ],
+        )
 
     @patch.object(
         settings,
@@ -711,7 +808,7 @@ class UserManagementFeatureTests(TestCase):
             "/api/v1/users/",
             {
                 "email": "created@example.com",
-                "password": "createdpassword123",
+                "password": "CreatedPassword123!",
                 "first_name": "Created",
                 "last_name": "User",
                 "groups": ["editor"],
@@ -738,6 +835,30 @@ class UserManagementFeatureTests(TestCase):
             {"developer", "user"},
         )
 
+    def test_admin_user_create_rejects_weak_password(self):
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.post(
+            "/api/v1/users/",
+            {
+                "email": "weak-created@example.com",
+                "password": "createdpassword123",
+                "first_name": "Created",
+                "last_name": "User",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data["success"])
+        self.assertEqual(
+            response.data["error"]["details"]["fields"]["password"],
+            [
+                "Password must contain at least one uppercase letter.",
+                "Password must contain at least one special character.",
+            ],
+        )
+
     def test_group_permission_helper_assigns_gateway_permissions(self):
         developer_group, missing = ensure_group_permissions("developer")
 
@@ -751,7 +872,7 @@ class UserManagementFeatureTests(TestCase):
             "/api/v1/auth/login/",
             {
                 "email": "user@example.com",
-                "password": "password123",
+                "password": "Password123!",
             },
             format="json",
         )
@@ -848,6 +969,7 @@ class UserManagementFeatureTests(TestCase):
         self.assertEqual(payload["api"]["api_keys_total"], 1)
         self.assertEqual(payload["api"]["requests_total"], 2)
         self.assertEqual(payload["api"]["error_requests_last_24h"], 1)
+        self.assertEqual(payload["activity"]["api_usage_logs_total"], 2)
 
     def test_admin_activity_returns_recent_dataset_and_api_events(self):
         category = Category.objects.create(name="Health", slug="health")
@@ -903,14 +1025,222 @@ class UserManagementFeatureTests(TestCase):
         )
         self.assertEqual(api_usage_entry["dataset_slug"], "admin-activity-dataset")
 
+    def test_admin_dashboard_aggregation_endpoints_return_expected_metrics(self):
+        category = Category.objects.create(name="Transport", slug="transport")
+        dataset = Dataset.objects.create(
+            publisher_user=self.user,
+            category=category,
+            slug="admin-metrics-dataset",
+            status=DatasetStatus.PUBLISHED,
+            visibility=True,
+        )
+        other_dataset = Dataset.objects.create(
+            publisher_user=self.user,
+            category=category,
+            slug="admin-metrics-dataset-two",
+            status=DatasetStatus.APPROVED,
+            visibility=False,
+        )
+
+        consumer = APIConsumer.objects.create(
+            user=self.user,
+            name="Metrics Consumer",
+            consumer_type="developer",
+            email=self.user.email,
+            status="active",
+        )
+        api_key, _ = issue_api_key(consumer=consumer, name="Metrics Key")
+        APIUsageLog.objects.create(
+            api_key=api_key,
+            consumer=consumer,
+            endpoint="/api/v1/gateway/datasets/",
+            method="GET",
+            status_code=200,
+            response_time_ms=120,
+        )
+        APIUsageLog.objects.create(
+            api_key=api_key,
+            consumer=consumer,
+            endpoint=f"/api/v1/gateway/datasets/{dataset.slug}/",
+            method="GET",
+            status_code=500,
+            response_time_ms=240,
+        )
+
+        DatasetAuditLog.objects.create(
+            dataset=dataset,
+            actor=self.admin,
+            action="file_downloaded",
+            target_model="datasets.datasetfile",
+            target_id=uuid.uuid4(),
+            details={},
+        )
+        DatasetAuditLog.objects.create(
+            dataset=dataset,
+            actor=None,
+            action="file_downloaded",
+            target_model="datasets.datasetfile",
+            target_id=uuid.uuid4(),
+            details={},
+        )
+        DatasetAuditLog.objects.create(
+            dataset=dataset,
+            actor=self.user,
+            action="file_previewed",
+            target_model="datasets.datasetfile",
+            target_id=uuid.uuid4(),
+            details={},
+        )
+        DatasetAuditLog.objects.create(
+            dataset=dataset,
+            actor=self.user,
+            action="file_data_accessed",
+            target_model="datasets.datasetfile",
+            target_id=uuid.uuid4(),
+            details={},
+        )
+        DatasetAuditLog.objects.create(
+            dataset=other_dataset,
+            actor=self.admin,
+            action="file_schema_accessed",
+            target_model="datasets.datasetfile",
+            target_id=uuid.uuid4(),
+            details={},
+        )
+        DatasetAuditLog.objects.create(
+            dataset=dataset,
+            actor=self.admin,
+            action="dataset_created",
+            target_model="datasets.dataset",
+            target_id=dataset.id,
+            details={},
+        )
+        DatasetAuditLog.objects.create(
+            dataset=dataset,
+            actor=self.admin,
+            action="dataset_review_submitted",
+            target_model="datasets.dataset",
+            target_id=dataset.id,
+            details={},
+        )
+        DatasetAuditLog.objects.create(
+            dataset=dataset,
+            actor=self.admin,
+            action="dataset_review_approved",
+            target_model="datasets.dataset",
+            target_id=dataset.id,
+            details={},
+        )
+        DatasetAuditLog.objects.create(
+            dataset=dataset,
+            actor=self.admin,
+            action="metadata_updated",
+            target_model="datasets.datasetmetadata",
+            target_id=uuid.uuid4(),
+            details={},
+        )
+        DatasetAuditLog.objects.create(
+            dataset=dataset,
+            actor=self.admin,
+            action="tag_linked",
+            target_model="datasets.datasettag",
+            target_id=uuid.uuid4(),
+            details={},
+        )
+        DatasetAuditLog.objects.create(
+            dataset=dataset,
+            actor=self.admin,
+            action="version_created",
+            target_model="datasets.datasetversion",
+            target_id=uuid.uuid4(),
+            details={},
+        )
+        DatasetAuditLog.objects.create(
+            dataset=dataset,
+            actor=self.admin,
+            action="file_validated",
+            target_model="datasets.datasetfile",
+            target_id=uuid.uuid4(),
+            details={},
+        )
+
+        self.client.force_authenticate(user=self.admin)
+
+        api_calls_response = self.client.get(
+            "/api/v1/admin/dashboard/api-calls/summary/?days=7"
+        )
+        self.assertEqual(api_calls_response.status_code, 200)
+        api_calls_payload = api_calls_response.data["data"]
+        self.assertEqual(api_calls_payload["days"], 7)
+        self.assertEqual(api_calls_payload["totals"]["total_requests"], 2)
+        self.assertEqual(api_calls_payload["totals"]["success_requests"], 1)
+        self.assertEqual(api_calls_payload["totals"]["error_requests"], 1)
+        self.assertEqual(api_calls_payload["totals"]["unique_consumers"], 1)
+        self.assertEqual(api_calls_payload["totals"]["unique_api_keys"], 1)
+        self.assertEqual(api_calls_payload["totals"]["average_response_time_ms"], 180.0)
+        self.assertEqual(len(api_calls_payload["by_day"]), 7)
+        self.assertEqual(api_calls_payload["top_endpoints"][0]["request_count"], 1)
+
+        downloads_response = self.client.get(
+            "/api/v1/admin/dashboard/downloads/summary/?days=7"
+        )
+        self.assertEqual(downloads_response.status_code, 200)
+        downloads_payload = downloads_response.data["data"]
+        self.assertEqual(downloads_payload["totals"]["total_downloads"], 2)
+        self.assertEqual(downloads_payload["totals"]["unique_datasets"], 1)
+        self.assertEqual(downloads_payload["totals"]["unique_files"], 2)
+        self.assertEqual(downloads_payload["totals"]["authenticated_downloads"], 1)
+        self.assertEqual(downloads_payload["totals"]["anonymous_downloads"], 1)
+        self.assertEqual(downloads_payload["top_datasets"][0]["dataset_slug"], dataset.slug)
+        self.assertEqual(downloads_payload["top_datasets"][0]["count"], 2)
+
+        views_response = self.client.get("/api/v1/admin/dashboard/views/summary/?days=7")
+        self.assertEqual(views_response.status_code, 200)
+        views_payload = views_response.data["data"]
+        self.assertEqual(views_payload["totals"]["total_views"], 3)
+        self.assertEqual(views_payload["totals"]["unique_datasets"], 2)
+        self.assertEqual(views_payload["totals"]["unique_files"], 3)
+        self.assertEqual(views_payload["totals"]["preview_views"], 1)
+        self.assertEqual(views_payload["totals"]["data_views"], 1)
+        self.assertEqual(views_payload["totals"]["schema_views"], 1)
+        self.assertEqual(views_payload["top_datasets"][0]["dataset_slug"], dataset.slug)
+        self.assertEqual(views_payload["top_datasets"][0]["count"], 2)
+
+        dataset_activity_response = self.client.get(
+            "/api/v1/admin/dashboard/datasets/activity/summary/?days=7"
+        )
+        self.assertEqual(dataset_activity_response.status_code, 200)
+        dataset_activity_payload = dataset_activity_response.data["data"]
+        self.assertEqual(dataset_activity_payload["totals"]["total_events"], 7)
+        self.assertEqual(dataset_activity_payload["totals"]["unique_datasets"], 1)
+        self.assertEqual(dataset_activity_payload["totals"]["dataset_events"], 1)
+        self.assertEqual(dataset_activity_payload["totals"]["workflow_events"], 2)
+        self.assertEqual(dataset_activity_payload["totals"]["file_events"], 1)
+        self.assertEqual(dataset_activity_payload["totals"]["metadata_events"], 1)
+        self.assertEqual(dataset_activity_payload["totals"]["tag_events"], 1)
+        self.assertEqual(dataset_activity_payload["totals"]["version_events"], 1)
+        self.assertEqual(dataset_activity_payload["by_action"][0]["count"], 1)
+        self.assertEqual(
+            dataset_activity_payload["top_datasets"][0]["dataset_slug"],
+            dataset.slug,
+        )
+        self.assertEqual(dataset_activity_payload["top_datasets"][0]["count"], 7)
+
     def test_admin_activity_and_summary_require_admin_permissions(self):
         self.client.force_authenticate(user=self.user)
 
-        activity_response = self.client.get("/api/v1/admin/activity/")
-        summary_response = self.client.get("/api/v1/admin/dashboard/summary/")
+        protected_paths = (
+            "/api/v1/admin/activity/",
+            "/api/v1/admin/dashboard/summary/",
+            "/api/v1/admin/dashboard/api-calls/summary/",
+            "/api/v1/admin/dashboard/downloads/summary/",
+            "/api/v1/admin/dashboard/views/summary/",
+            "/api/v1/admin/dashboard/datasets/activity/summary/",
+        )
 
-        self.assertEqual(activity_response.status_code, 403)
-        self.assertEqual(summary_response.status_code, 403)
+        for path in protected_paths:
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 403)
 
     def _extract_token(self, body):
         match = re.search(r"Token:\s*(\S+)", body)

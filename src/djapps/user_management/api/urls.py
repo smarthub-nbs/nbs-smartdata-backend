@@ -3,7 +3,11 @@ from django.urls import path
 from .views import (
     AdminAPIView,
     AdminActivityAPIView,
+    AdminDashboardAPICallsSummaryAPIView,
+    AdminDashboardDatasetActivitySummaryAPIView,
+    AdminDashboardDownloadsSummaryAPIView,
     AdminDashboardSummaryAPIView,
+    AdminDashboardViewsSummaryAPIView,
     CSRFCookieAPIView,
     DeveloperAPIView,
     EmailVerificationConfirmAPIView,
@@ -32,7 +36,9 @@ from .views import (
     UserReactivateAPIView,
 )
 
+
 prefix = "api/v1/"
+
 
 urlpatterns = [
     path("ping/", PublicPingAPIView.as_view(), name="api-ping"),
@@ -106,6 +112,26 @@ urlpatterns = [
         "admin/dashboard/summary/",
         AdminDashboardSummaryAPIView.as_view(),
         name="api-admin-dashboard-summary",
+    ),
+    path(
+        "admin/dashboard/api-calls/summary/",
+        AdminDashboardAPICallsSummaryAPIView.as_view(),
+        name="api-admin-dashboard-api-calls-summary",
+    ),
+    path(
+        "admin/dashboard/downloads/summary/",
+        AdminDashboardDownloadsSummaryAPIView.as_view(),
+        name="api-admin-dashboard-downloads-summary",
+    ),
+    path(
+        "admin/dashboard/views/summary/",
+        AdminDashboardViewsSummaryAPIView.as_view(),
+        name="api-admin-dashboard-views-summary",
+    ),
+    path(
+        "admin/dashboard/datasets/activity/summary/",
+        AdminDashboardDatasetActivitySummaryAPIView.as_view(),
+        name="api-admin-dashboard-dataset-activity-summary",
     ),
     path("permission/", PermissionProtectedAPIView.as_view(), name="api-permission"),
 ]

@@ -339,6 +339,112 @@ class AdminDashboardSummarySerializer(serializers.Serializer):
     activity = AdminDashboardActivitySummarySerializer(read_only=True)
 
 
+class AdminAnalyticsDatasetCountSerializer(serializers.Serializer):
+    dataset_id = serializers.CharField(read_only=True)
+    dataset_slug = serializers.CharField(read_only=True, allow_null=True)
+    count = serializers.IntegerField(read_only=True)
+
+
+class AdminAnalyticsActionCountSerializer(serializers.Serializer):
+    action = serializers.CharField(read_only=True)
+    count = serializers.IntegerField(read_only=True)
+
+
+class AdminAnalyticsEndpointCountSerializer(serializers.Serializer):
+    endpoint = serializers.CharField(read_only=True)
+    method = serializers.CharField(read_only=True)
+    request_count = serializers.IntegerField(read_only=True)
+    error_count = serializers.IntegerField(read_only=True)
+
+
+class AdminAPICallsDailySerializer(serializers.Serializer):
+    date = serializers.DateField(read_only=True)
+    total_requests = serializers.IntegerField(read_only=True)
+    success_requests = serializers.IntegerField(read_only=True)
+    error_requests = serializers.IntegerField(read_only=True)
+
+
+class AdminAPICallsTotalsSerializer(serializers.Serializer):
+    total_requests = serializers.IntegerField(read_only=True)
+    success_requests = serializers.IntegerField(read_only=True)
+    error_requests = serializers.IntegerField(read_only=True)
+    unique_consumers = serializers.IntegerField(read_only=True)
+    unique_api_keys = serializers.IntegerField(read_only=True)
+    average_response_time_ms = serializers.FloatField(read_only=True, allow_null=True)
+
+
+class AdminAPICallsSummarySerializer(serializers.Serializer):
+    days = serializers.IntegerField(read_only=True)
+    totals = AdminAPICallsTotalsSerializer(read_only=True)
+    by_day = AdminAPICallsDailySerializer(many=True, read_only=True)
+    top_endpoints = AdminAnalyticsEndpointCountSerializer(many=True, read_only=True)
+
+
+class AdminDownloadsDailySerializer(serializers.Serializer):
+    date = serializers.DateField(read_only=True)
+    total_downloads = serializers.IntegerField(read_only=True)
+
+
+class AdminDownloadsTotalsSerializer(serializers.Serializer):
+    total_downloads = serializers.IntegerField(read_only=True)
+    unique_datasets = serializers.IntegerField(read_only=True)
+    unique_files = serializers.IntegerField(read_only=True)
+    authenticated_downloads = serializers.IntegerField(read_only=True)
+    anonymous_downloads = serializers.IntegerField(read_only=True)
+
+
+class AdminDownloadsSummarySerializer(serializers.Serializer):
+    days = serializers.IntegerField(read_only=True)
+    totals = AdminDownloadsTotalsSerializer(read_only=True)
+    by_day = AdminDownloadsDailySerializer(many=True, read_only=True)
+    top_datasets = AdminAnalyticsDatasetCountSerializer(many=True, read_only=True)
+
+
+class AdminViewsDailySerializer(serializers.Serializer):
+    date = serializers.DateField(read_only=True)
+    total_views = serializers.IntegerField(read_only=True)
+
+
+class AdminViewsTotalsSerializer(serializers.Serializer):
+    total_views = serializers.IntegerField(read_only=True)
+    unique_datasets = serializers.IntegerField(read_only=True)
+    unique_files = serializers.IntegerField(read_only=True)
+    preview_views = serializers.IntegerField(read_only=True)
+    data_views = serializers.IntegerField(read_only=True)
+    schema_views = serializers.IntegerField(read_only=True)
+
+
+class AdminViewsSummarySerializer(serializers.Serializer):
+    days = serializers.IntegerField(read_only=True)
+    totals = AdminViewsTotalsSerializer(read_only=True)
+    by_day = AdminViewsDailySerializer(many=True, read_only=True)
+    top_datasets = AdminAnalyticsDatasetCountSerializer(many=True, read_only=True)
+
+
+class AdminDatasetActivityDailySerializer(serializers.Serializer):
+    date = serializers.DateField(read_only=True)
+    total_events = serializers.IntegerField(read_only=True)
+
+
+class AdminDatasetActivityTotalsSerializer(serializers.Serializer):
+    total_events = serializers.IntegerField(read_only=True)
+    unique_datasets = serializers.IntegerField(read_only=True)
+    dataset_events = serializers.IntegerField(read_only=True)
+    workflow_events = serializers.IntegerField(read_only=True)
+    file_events = serializers.IntegerField(read_only=True)
+    metadata_events = serializers.IntegerField(read_only=True)
+    tag_events = serializers.IntegerField(read_only=True)
+    version_events = serializers.IntegerField(read_only=True)
+
+
+class AdminDatasetActivitySummarySerializer(serializers.Serializer):
+    days = serializers.IntegerField(read_only=True)
+    totals = AdminDatasetActivityTotalsSerializer(read_only=True)
+    by_day = AdminDatasetActivityDailySerializer(many=True, read_only=True)
+    by_action = AdminAnalyticsActionCountSerializer(many=True, read_only=True)
+    top_datasets = AdminAnalyticsDatasetCountSerializer(many=True, read_only=True)
+
+
 class UserAdminListSerializer(serializers.ModelSerializer):
     groups = serializers.SerializerMethodField()
 

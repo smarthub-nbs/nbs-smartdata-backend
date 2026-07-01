@@ -1,7 +1,8 @@
 from datetime import timedelta
 
 from django.contrib.auth.models import Group
-from django.db.models import Count, Q
+from django.db.models import Avg, Count, Q
+from django.db.models.functions import TruncDate
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
@@ -36,8 +37,12 @@ from ..roles import (
 from .serializers import (
     AdminActivityEntrySerializer,
     AdminActivityListPayloadSerializer,
+    AdminAPICallsSummarySerializer,
     AdminDashboardSummarySerializer,
+    AdminDatasetActivitySummarySerializer,
+    AdminDownloadsSummarySerializer,
     AdminUserCreateSerializer,
+    AdminViewsSummarySerializer,
     CSRFTokenSerializer,
     AdminUserUpdateSerializer,
     ChangePasswordSerializer,
@@ -88,6 +93,39 @@ ADMIN_ANALYTICS_PERMISSIONS = ADMIN_REQUIRED_PERMISSIONS + (
     "gateway.view_apikey",
     "gateway.view_apiusagelog",
 )
+DEFAULT_ADMIN_ANALYTICS_DAYS = 30
+MAX_ADMIN_ANALYTICS_DAYS = 365
+ADMIN_ANALYTICS_TOP_LIMIT = 5
+DATASET_VIEW_ACTIONS = (
+    "file_previewed",
+    "file_data_accessed",
+    "file_schema_accessed",
+)
+DATASET_RECORD_ACTIONS = (
+    "dataset_created",
+    "dataset_updated",
+    "dataset_deleted",
+    "dataset_restored",
+    "dataset_owner_transferred",
+)
+DATASET_WORKFLOW_ACTIONS = (
+    "dataset_review_submitted",
+    "dataset_review_approved",
+    "dataset_review_rejected",
+    "dataset_published",
+    "dataset_unpublished",
+)
+DATASET_ACTIVITY_EXCLUDED_ACTIONS = DATASET_VIEW_ACTIONS + ("file_downloaded",)
+ADMIN_ANALYTICS_DAYS_PARAMETER = OpenApiParameter(
+    name="days",
+    type=OpenApiTypes.INT,
+    location=OpenApiParameter.QUERY,
+    description=(
+        "Trailing calendar days to include in the aggregation. "
+        f"Minimum 1, maximum {MAX_ADMIN_ANALYTICS_DAYS}. Defaults to "
+        f"{DEFAULT_ADMIN_ANALYTICS_DAYS}."
+    ),
+)
 
 
 def _compact_activity_details(details):
@@ -96,6 +134,61 @@ def _compact_activity_details(details):
         for key, value in (details or {}).items()
         if value is not None and value != ""
     }
+
+
+def _parse_analytics_days(request):
+    raw_days = request.query_params.get("days")
+    if raw_days in (None, ""):
+        return DEFAULT_ADMIN_ANALYTICS_DAYS
+
+    try:
+        days = int(raw_days)
+    except (TypeError, ValueError):
+        raise ValidationError({"days": ["Enter a whole number."]})
+
+    if not 1 <= days <= MAX_ADMIN_ANALYTICS_DAYS:
+        raise ValidationError(
+            {
+                "days": [
+                    f"Ensure this value is between 1 and {MAX_ADMIN_ANALYTICS_DAYS}."
+                ]
+            }
+        )
+    return days
+
+
+def _get_analytics_start_date(days):
+    return timezone.localdate() - timedelta(days=days - 1)
+
+
+def _fill_daily_series(rows, start_date, days, default_values):
+    rows_by_date = {row["date"]: row for row in rows}
+    series = []
+    for offset in range(days):
+        current_date = start_date + timedelta(days=offset)
+        row = {"date": current_date, **default_values}
+        if current_date in rows_by_date:
+            row.update(
+                {
+                    key: value
+                    for key, value in rows_by_date[current_date].items()
+                    if key != "date"
+                }
+            )
+        series.append(row)
+    return series
+
+
+def _serialize_top_dataset_counts(rows):
+    return [
+        {
+            "dataset_id": str(row["dataset_id"]),
+            "dataset_slug": row.get("dataset__slug"),
+            "count": row["count"],
+        }
+        for row in rows
+        if row.get("dataset_id")
+    ]
 
 
 def _serialize_dataset_activity(log):
@@ -858,6 +951,10 @@ class AdminAnalyticsBaseAPIView(StandardizedAPIView):
         page = paginator.paginate_queryset(queryset, self.request, view=self)
         return paginator, page
 
+    def get_analytics_window(self):
+        days = _parse_analytics_days(self.request)
+        return days, _get_analytics_start_date(days)
+
 
 class AdminActivityAPIView(AdminAnalyticsBaseAPIView):
     serializer_class = AdminActivityEntrySerializer
@@ -1024,7 +1121,313 @@ class AdminDashboardSummaryAPIView(AdminAnalyticsBaseAPIView):
                 "users": user_summary,
                 "datasets": dataset_summary,
                 "api": api_summary,
-                "acBativity": activity_summary,
+                "activity": activity_summary,
+            }
+        )
+        return success_response(data=serializer.data)
+
+
+class AdminDashboardAPICallsSummaryAPIView(AdminAnalyticsBaseAPIView):
+    serializer_class = AdminAPICallsSummarySerializer
+
+    @extend_schema(
+        tags=["Administration"],
+        operation_id="admin_dashboard_api_calls_summary",
+        summary="Get admin API call aggregation",
+        description=(
+            "Return aggregated API call metrics for the requested trailing day window, "
+            "including daily totals and top endpoints."
+        ),
+        parameters=[ADMIN_ANALYTICS_DAYS_PARAMETER],
+        responses={
+            200: success_response_schema(
+                "AdminDashboardAPICallsSummarySuccessResponse",
+                AdminAPICallsSummarySerializer,
+                description="Admin API call aggregation returned successfully.",
+            ),
+            **standard_error_responses(
+                "AdminDashboardAPICallsSummary",
+                include_400=True,
+                include_401=True,
+                include_403=True,
+            ),
+        },
+    )
+    def get(self, request):
+        days, start_date = self.get_analytics_window()
+        queryset = APIUsageLog.objects.filter(created_at__date__gte=start_date)
+
+        totals = queryset.aggregate(
+            total_requests=Count("id"),
+            success_requests=Count("id", filter=Q(status_code__lt=400)),
+            error_requests=Count("id", filter=Q(status_code__gte=400)),
+            unique_consumers=Count("consumer_id", distinct=True),
+            unique_api_keys=Count("api_key_id", distinct=True),
+            average_response_time_ms=Avg("response_time_ms"),
+        )
+        if totals["average_response_time_ms"] is not None:
+            totals["average_response_time_ms"] = float(
+                round(totals["average_response_time_ms"], 2)
+            )
+
+        by_day_rows = list(
+            queryset.annotate(date=TruncDate("created_at"))
+            .values("date")
+            .annotate(
+                total_requests=Count("id"),
+                success_requests=Count("id", filter=Q(status_code__lt=400)),
+                error_requests=Count("id", filter=Q(status_code__gte=400)),
+            )
+            .order_by("date")
+        )
+        top_endpoints = list(
+            queryset.values("endpoint", "method")
+            .annotate(
+                request_count=Count("id"),
+                error_count=Count("id", filter=Q(status_code__gte=400)),
+            )
+            .order_by("-request_count", "endpoint", "method")[:ADMIN_ANALYTICS_TOP_LIMIT]
+        )
+
+        serializer = self.serializer_class(
+            {
+                "days": days,
+                "totals": totals,
+                "by_day": _fill_daily_series(
+                    by_day_rows,
+                    start_date,
+                    days,
+                    {
+                        "total_requests": 0,
+                        "success_requests": 0,
+                        "error_requests": 0,
+                    },
+                ),
+                "top_endpoints": top_endpoints,
+            }
+        )
+        return success_response(data=serializer.data)
+
+
+class AdminDashboardDownloadsSummaryAPIView(AdminAnalyticsBaseAPIView):
+    serializer_class = AdminDownloadsSummarySerializer
+
+    @extend_schema(
+        tags=["Administration"],
+        operation_id="admin_dashboard_downloads_summary",
+        summary="Get admin download aggregation",
+        description=(
+            "Return aggregated dataset download metrics for the requested trailing day window."
+        ),
+        parameters=[ADMIN_ANALYTICS_DAYS_PARAMETER],
+        responses={
+            200: success_response_schema(
+                "AdminDashboardDownloadsSummarySuccessResponse",
+                AdminDownloadsSummarySerializer,
+                description="Admin download aggregation returned successfully.",
+            ),
+            **standard_error_responses(
+                "AdminDashboardDownloadsSummary",
+                include_400=True,
+                include_401=True,
+                include_403=True,
+            ),
+        },
+    )
+    def get(self, request):
+        days, start_date = self.get_analytics_window()
+        queryset = DatasetAuditLog.objects.select_related("dataset").filter(
+            created_at__date__gte=start_date,
+            action="file_downloaded",
+        )
+
+        totals = {
+            "total_downloads": queryset.count(),
+            "unique_datasets": queryset.values("dataset_id").distinct().count(),
+            "unique_files": queryset.exclude(target_id__isnull=True)
+            .values("target_id")
+            .distinct()
+            .count(),
+            "authenticated_downloads": queryset.filter(actor__isnull=False).count(),
+            "anonymous_downloads": queryset.filter(actor__isnull=True).count(),
+        }
+        by_day_rows = list(
+            queryset.annotate(date=TruncDate("created_at"))
+            .values("date")
+            .annotate(total_downloads=Count("id"))
+            .order_by("date")
+        )
+        top_datasets = _serialize_top_dataset_counts(
+            list(
+                queryset.values("dataset_id", "dataset__slug")
+                .annotate(count=Count("id"))
+                .order_by("-count", "dataset__slug")[:ADMIN_ANALYTICS_TOP_LIMIT]
+            )
+        )
+
+        serializer = self.serializer_class(
+            {
+                "days": days,
+                "totals": totals,
+                "by_day": _fill_daily_series(
+                    by_day_rows,
+                    start_date,
+                    days,
+                    {"total_downloads": 0},
+                ),
+                "top_datasets": top_datasets,
+            }
+        )
+        return success_response(data=serializer.data)
+
+
+class AdminDashboardViewsSummaryAPIView(AdminAnalyticsBaseAPIView):
+    serializer_class = AdminViewsSummarySerializer
+
+    @extend_schema(
+        tags=["Administration"],
+        operation_id="admin_dashboard_views_summary",
+        summary="Get admin dataset view aggregation",
+        description=(
+            "Return aggregated dataset view metrics for the requested trailing day window. "
+            "Views are derived from preview, structured data, and schema access audit events."
+        ),
+        parameters=[ADMIN_ANALYTICS_DAYS_PARAMETER],
+        responses={
+            200: success_response_schema(
+                "AdminDashboardViewsSummarySuccessResponse",
+                AdminViewsSummarySerializer,
+                description="Admin dataset view aggregation returned successfully.",
+            ),
+            **standard_error_responses(
+                "AdminDashboardViewsSummary",
+                include_400=True,
+                include_401=True,
+                include_403=True,
+            ),
+        },
+    )
+    def get(self, request):
+        days, start_date = self.get_analytics_window()
+        queryset = DatasetAuditLog.objects.select_related("dataset").filter(
+            created_at__date__gte=start_date,
+            action__in=DATASET_VIEW_ACTIONS,
+        )
+
+        totals = {
+            "total_views": queryset.count(),
+            "unique_datasets": queryset.values("dataset_id").distinct().count(),
+            "unique_files": queryset.exclude(target_id__isnull=True)
+            .values("target_id")
+            .distinct()
+            .count(),
+            "preview_views": queryset.filter(action="file_previewed").count(),
+            "data_views": queryset.filter(action="file_data_accessed").count(),
+            "schema_views": queryset.filter(action="file_schema_accessed").count(),
+        }
+        by_day_rows = list(
+            queryset.annotate(date=TruncDate("created_at"))
+            .values("date")
+            .annotate(total_views=Count("id"))
+            .order_by("date")
+        )
+        top_datasets = _serialize_top_dataset_counts(
+            list(
+                queryset.values("dataset_id", "dataset__slug")
+                .annotate(count=Count("id"))
+                .order_by("-count", "dataset__slug")[:ADMIN_ANALYTICS_TOP_LIMIT]
+            )
+        )
+
+        serializer = self.serializer_class(
+            {
+                "days": days,
+                "totals": totals,
+                "by_day": _fill_daily_series(
+                    by_day_rows,
+                    start_date,
+                    days,
+                    {"total_views": 0},
+                ),
+                "top_datasets": top_datasets,
+            }
+        )
+        return success_response(data=serializer.data)
+
+
+class AdminDashboardDatasetActivitySummaryAPIView(AdminAnalyticsBaseAPIView):
+    serializer_class = AdminDatasetActivitySummarySerializer
+
+    @extend_schema(
+        tags=["Administration"],
+        operation_id="admin_dashboard_dataset_activity_summary",
+        summary="Get admin dataset activity aggregation",
+        description=(
+            "Return aggregated dataset management activity for the requested trailing day window, "
+            "excluding end-user download and view access events."
+        ),
+        parameters=[ADMIN_ANALYTICS_DAYS_PARAMETER],
+        responses={
+            200: success_response_schema(
+                "AdminDashboardDatasetActivitySummarySuccessResponse",
+                AdminDatasetActivitySummarySerializer,
+                description="Admin dataset activity aggregation returned successfully.",
+            ),
+            **standard_error_responses(
+                "AdminDashboardDatasetActivitySummary",
+                include_400=True,
+                include_401=True,
+                include_403=True,
+            ),
+        },
+    )
+    def get(self, request):
+        days, start_date = self.get_analytics_window()
+        queryset = DatasetAuditLog.objects.select_related("dataset").filter(
+            created_at__date__gte=start_date,
+        ).exclude(action__in=DATASET_ACTIVITY_EXCLUDED_ACTIONS)
+
+        totals = {
+            "total_events": queryset.count(),
+            "unique_datasets": queryset.values("dataset_id").distinct().count(),
+            "dataset_events": queryset.filter(action__in=DATASET_RECORD_ACTIONS).count(),
+            "workflow_events": queryset.filter(action__in=DATASET_WORKFLOW_ACTIONS).count(),
+            "file_events": queryset.filter(action__startswith="file_").count(),
+            "metadata_events": queryset.filter(action__startswith="metadata_").count(),
+            "tag_events": queryset.filter(action__startswith="tag_").count(),
+            "version_events": queryset.filter(action__startswith="version_").count(),
+        }
+        by_day_rows = list(
+            queryset.annotate(date=TruncDate("created_at"))
+            .values("date")
+            .annotate(total_events=Count("id"))
+            .order_by("date")
+        )
+        by_action = list(
+            queryset.values("action")
+            .annotate(count=Count("id"))
+            .order_by("-count", "action")
+        )
+        top_datasets = _serialize_top_dataset_counts(
+            list(
+                queryset.values("dataset_id", "dataset__slug")
+                .annotate(count=Count("id"))
+                .order_by("-count", "dataset__slug")[:ADMIN_ANALYTICS_TOP_LIMIT]
+            )
+        )
+
+        serializer = self.serializer_class(
+            {
+                "days": days,
+                "totals": totals,
+                "by_day": _fill_daily_series(
+                    by_day_rows,
+                    start_date,
+                    days,
+                    {"total_events": 0},
+                ),
+                "by_action": by_action,
+                "top_datasets": top_datasets,
             }
         )
         return success_response(data=serializer.data)
