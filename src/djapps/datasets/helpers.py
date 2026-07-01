@@ -1,6 +1,8 @@
+from django.utils import timezone
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 
+from djapps.datasets.audit import log_dataset_event
 from djapps.datasets.models import DatasetFile, DatasetStatus, DatasetStatusHistory, FileValidationStatus
 from djapps.datasets.permissions import has_dataset_admin_access
 
@@ -27,6 +29,68 @@ def create_status_history(dataset, changed_by, old_status, new_status, reason):
         new_status=new_status,
         reason=reason,
     )
+
+
+def format_validation_error(exc):
+    if isinstance(exc.detail, list):
+        return " ".join(str(item) for item in exc.detail)
+    if isinstance(exc.detail, dict):
+        return str(exc.detail)
+    return str(exc.detail)
+
+
+def process_dataset_bulk_action(
+    dataset,
+    *,
+    action,
+    reason,
+    actor,
+    audit_details=None,
+):
+    old_status = dataset.status
+
+    if action == "approve":
+        if dataset.status != DatasetStatus.IN_REVIEW:
+            raise ValidationError("Only datasets in review can be approved.")
+        dataset.status = DatasetStatus.APPROVED
+        final_reason = reason or "Dataset approved for publication."
+        audit_action = "dataset_review_approved"
+        update_fields = ["status", "visibility", "updated_at"]
+    elif action == "reject":
+        if dataset.status != DatasetStatus.IN_REVIEW:
+            raise ValidationError("Only datasets in review can be rejected.")
+        dataset.status = DatasetStatus.REJECTED
+        dataset.visibility = False
+        final_reason = reason
+        audit_action = "dataset_review_rejected"
+        update_fields = ["status", "visibility", "updated_at"]
+    else:
+        if dataset.status != DatasetStatus.APPROVED:
+            raise ValidationError("Only approved datasets can be published.")
+        dataset.status = DatasetStatus.PUBLISHED
+        dataset.visibility = True
+        dataset.published_at = dataset.published_at or timezone.now()
+        final_reason = reason or "Published via API."
+        audit_action = "dataset_published"
+        update_fields = ["status", "visibility", "published_at", "updated_at"]
+
+    dataset.save(update_fields=update_fields)
+    create_status_history(dataset, actor, old_status, dataset.status, final_reason)
+    log_dataset_event(
+        dataset,
+        audit_action,
+        actor=actor,
+        details={
+            **(audit_details or {}),
+            "old_status": old_status,
+            "new_status": dataset.status,
+            "reason": final_reason,
+        },
+    )
+    return {
+        "dataset_id": str(dataset.id),
+        "status": dataset.status,
+    }
 
 
 def validate_dataset_ready_for_review(dataset):

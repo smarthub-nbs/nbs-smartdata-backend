@@ -3,6 +3,11 @@ from rest_framework import routers
 
 from djapps.datasets.views import (
     DatasetAdminBulkActionView,
+    DatasetBulkActionJobDetailView,
+    DatasetBulkActionJobListView,
+    DatasetAdminBulkUploadView,
+    DatasetBulkUploadJobDetailView,
+    DatasetBulkUploadJobListView,
     CategoryView,
     DatasetAdminQueueView,
     DatasetAdminQueueSummaryView,
@@ -21,11 +26,13 @@ from djapps.datasets.views import (
     DatasetVersionView,
     DatasetView,
     IndexingStatusView,
+    RegionView,
     TagView,
 )
 
 router = routers.DefaultRouter()
 router.register(r"categories", CategoryView, basename="dataset-category")
+router.register(r"regions", RegionView, basename="dataset-region")
 router.register(r"tags", TagView, basename="dataset-tag-taxonomy")
 router.register(r"versions", DatasetVersionView, basename="dataset-version")
 
@@ -43,6 +50,31 @@ urlpatterns = [
         "admin-queue/bulk-action/",
         DatasetAdminBulkActionView.as_view(),
         name="dataset-admin-queue-bulk-action",
+    ),
+    path(
+        "admin-queue/bulk-upload/",
+        DatasetAdminBulkUploadView.as_view(),
+        name="dataset-admin-queue-bulk-upload",
+    ),
+    path(
+        "admin-queue/bulk-action/jobs/",
+        DatasetBulkActionJobListView.as_view(),
+        name="dataset-admin-queue-bulk-action-job-list",
+    ),
+    path(
+        "admin-queue/bulk-action/jobs/<uuid:job_id>/",
+        DatasetBulkActionJobDetailView.as_view(),
+        name="dataset-admin-queue-bulk-action-job-detail",
+    ),
+    path(
+        "admin-queue/bulk-upload/jobs/",
+        DatasetBulkUploadJobListView.as_view(),
+        name="dataset-admin-queue-bulk-upload-job-list",
+    ),
+    path(
+        "admin-queue/bulk-upload/jobs/<uuid:job_id>/",
+        DatasetBulkUploadJobDetailView.as_view(),
+        name="dataset-admin-queue-bulk-upload-job-detail",
     ),
     path(
         "admin-queue/summary/",

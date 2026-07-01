@@ -12,6 +12,9 @@ from djapps.datasets.models import (
     Category,
     Dataset,
     DatasetAuditLog,
+    DatasetBulkActionJob,
+    DatasetBulkUploadJob,
+    DatasetBulkUploadJobItem,
     DatasetFile,
     DatasetFrequency,
     DatasetMetadata,
@@ -21,6 +24,7 @@ from djapps.datasets.models import (
     DatasetVersion,
     FileValidationStatus,
     IndexingStatus,
+    Region,
     Tag,
 )
 
@@ -38,6 +42,15 @@ DEFAULT_ALLOWED_DATASET_FILE_EXTENSIONS = {
     ".zip",
 }
 DEFAULT_MAX_DATASET_FILE_SIZE = 50 * 1024 * 1024
+DATASET_ADMIN_BULK_ACTION_CHOICES = (
+    ("approve", "Approve"),
+    ("reject", "Reject"),
+    ("publish", "Publish"),
+)
+DATASET_REVIEW_ACTION_CHOICES = (
+    ("approve", "Approve"),
+    ("reject", "Reject"),
+)
 User = get_user_model()
 
 
@@ -236,11 +249,7 @@ class DatasetAdminBulkActionSerializer(serializers.Serializer):
     ACTION_REJECT = "reject"
     ACTION_PUBLISH = "publish"
 
-    ACTION_CHOICES = (
-        (ACTION_APPROVE, "Approve"),
-        (ACTION_REJECT, "Reject"),
-        (ACTION_PUBLISH, "Publish"),
-    )
+    ACTION_CHOICES = DATASET_ADMIN_BULK_ACTION_CHOICES
 
     action = serializers.ChoiceField(choices=ACTION_CHOICES)
     dataset_ids = serializers.ListField(
@@ -283,6 +292,150 @@ class DatasetAdminBulkActionResponseSerializer(serializers.Serializer):
     failed_count = serializers.IntegerField(read_only=True)
     processed = DatasetAdminBulkActionProcessedSerializer(many=True, read_only=True)
     failed = DatasetAdminBulkActionFailureSerializer(many=True, read_only=True)
+
+
+class DatasetAdminBulkActionJobSerializer(ModelSerializer):
+    requested_by_email = serializers.EmailField(source="requested_by.email", read_only=True)
+    status = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = DatasetBulkActionJob
+        fields = (
+            "id",
+            "action",
+            "status",
+            "requested_by_email",
+            "requested_count",
+            "processed_count",
+            "failed_count",
+            "task_id",
+            "error",
+            "created_at",
+            "started_at",
+            "completed_at",
+        )
+
+
+class DatasetAdminBulkActionJobDetailSerializer(DatasetAdminBulkActionJobSerializer):
+    requested_by_id = serializers.UUIDField(source="requested_by.id", read_only=True)
+    dataset_ids = serializers.ListField(child=serializers.CharField(), read_only=True)
+    reason = serializers.CharField(read_only=True)
+    audit_context = serializers.JSONField(read_only=True)
+    processed = serializers.JSONField(read_only=True)
+    failed = serializers.JSONField(read_only=True)
+
+    class Meta(DatasetAdminBulkActionJobSerializer.Meta):
+        fields = DatasetAdminBulkActionJobSerializer.Meta.fields + (
+            "requested_by_id",
+            "dataset_ids",
+            "reason",
+            "audit_context",
+            "processed",
+            "failed",
+        )
+
+
+class DatasetBulkUploadItemInputSerializer(serializers.Serializer):
+    dataset_id = serializers.UUIDField()
+    dataset_version_id = serializers.UUIDField(required=False, allow_null=True)
+    is_primary = serializers.BooleanField(required=False, default=True)
+
+    def validate(self, attrs):
+        if attrs.get("dataset_version_id") is None:
+            attrs.pop("dataset_version_id", None)
+        return attrs
+
+
+class DatasetBulkUploadJobCreateSerializer(serializers.Serializer):
+    items = DatasetBulkUploadItemInputSerializer(many=True)
+    publish_after_upload = serializers.BooleanField(required=False, default=False)
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=500)
+
+    def validate_items(self, value):
+        if not value:
+            raise serializers.ValidationError("At least one upload item is required.")
+        dataset_ids = [str(item["dataset_id"]) for item in value]
+        if len(set(dataset_ids)) != len(dataset_ids):
+            raise serializers.ValidationError("Duplicate dataset IDs are not allowed.")
+        return value
+
+
+class DatasetBulkUploadJobItemSerializer(ModelSerializer):
+    dataset_id = serializers.UUIDField(source="dataset.id", read_only=True)
+    dataset_slug = serializers.CharField(source="dataset.slug", read_only=True)
+    dataset_version_id = serializers.UUIDField(source="dataset_version.id", read_only=True)
+    status = serializers.CharField(read_only=True)
+    result = serializers.JSONField(read_only=True)
+
+    class Meta:
+        model = DatasetBulkUploadJobItem
+        fields = (
+            "id",
+            "dataset_id",
+            "dataset_slug",
+            "dataset_version_id",
+            "filename",
+            "is_primary",
+            "status",
+            "result",
+            "error",
+            "created_at",
+            "processed_at",
+        )
+
+
+class DatasetBulkUploadJobSerializer(ModelSerializer):
+    requested_by_email = serializers.EmailField(source="requested_by.email", read_only=True)
+    status = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = DatasetBulkUploadJob
+        fields = (
+            "id",
+            "status",
+            "publish_after_upload",
+            "reason",
+            "requested_by_email",
+            "total_count",
+            "processed_count",
+            "failed_count",
+            "task_id",
+            "error",
+            "created_at",
+            "started_at",
+            "completed_at",
+        )
+
+
+class DatasetBulkUploadJobDetailSerializer(DatasetBulkUploadJobSerializer):
+    requested_by_id = serializers.UUIDField(source="requested_by.id", read_only=True)
+    items = DatasetBulkUploadJobItemSerializer(many=True, read_only=True)
+
+    class Meta(DatasetBulkUploadJobSerializer.Meta):
+        fields = DatasetBulkUploadJobSerializer.Meta.fields + (
+            "requested_by_id",
+            "items",
+        )
+
+class DatasetPaginationMetaSerializer(serializers.Serializer):
+    page = serializers.IntegerField(read_only=True)
+    page_size = serializers.IntegerField(read_only=True)
+    total_pages = serializers.IntegerField(read_only=True)
+    total_items = serializers.IntegerField(read_only=True)
+    has_next = serializers.BooleanField(read_only=True)
+    has_previous = serializers.BooleanField(read_only=True)
+    next = serializers.CharField(read_only=True, allow_null=True)
+    previous = serializers.CharField(read_only=True, allow_null=True)
+
+
+class DatasetAdminBulkActionJobListPayloadSerializer(serializers.Serializer):
+    items = DatasetAdminBulkActionJobSerializer(many=True, read_only=True)
+    pagination = DatasetPaginationMetaSerializer(read_only=True)
+
+
+class DatasetBulkUploadJobListPayloadSerializer(serializers.Serializer):
+    items = DatasetBulkUploadJobSerializer(many=True, read_only=True)
+    pagination = DatasetPaginationMetaSerializer(read_only=True)
 
 
 class DatasetDetailSerializer(DatasetSerializer):
@@ -334,7 +487,7 @@ class DatasetSubmitReviewSerializer(serializers.Serializer):
 
 
 class DatasetReviewSerializer(serializers.Serializer):
-    action = serializers.ChoiceField(choices=("approve", "reject"))
+    action = serializers.ChoiceField(choices=DATASET_REVIEW_ACTION_CHOICES)
     reason = serializers.CharField(required=False, allow_blank=True, max_length=500)
 
     def validate(self, attrs):
@@ -717,3 +870,11 @@ class DatasetAuditLogSerializer(ModelSerializer):
             "created_at",
         )
         read_only_fields = fields
+
+class RegionSerializer(ModelSerializer):
+    class Meta:
+        model = Region
+        fields = (
+            "id",
+            "name"
+        )
