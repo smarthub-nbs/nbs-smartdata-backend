@@ -28,6 +28,7 @@ from .models import (
     FileValidationStatus,
     Tag,
 )
+from djapps.datasets.tasks import run_bulk_upload_job
 from djapps.user_management.roles import ensure_group_permissions
 
 
@@ -684,6 +685,32 @@ class DatasetWorkflowTests(TestCase):
         self.assertFalse(response.data["success"])
         self.assertEqual(DatasetBulkUploadJob.objects.count(), 0)
 
+    def test_admin_bulk_upload_does_not_require_publish_permission_for_false_string(
+        self,
+    ):
+        dataset = self.create_draft_dataset(slug="bulk-upload-publish-perm-false")
+
+        self.client.force_authenticate(user=self.editor)
+        response = self.client.post(
+            "/api/v1/dataset/admin-queue/bulk-upload/",
+            {
+                "items": json.dumps([{"dataset_id": str(dataset.id)}]),
+                "files": [
+                    SimpleUploadedFile(
+                        "bulk-upload.csv",
+                        b"country,value\nTZ,10\n",
+                        content_type="text/csv",
+                    )
+                ],
+                "publish_after_upload": "false",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(DatasetBulkUploadJob.objects.count(), 1)
+
     @patch(
         "djapps.datasets.views.run_bulk_upload_job.run",
         side_effect=RuntimeError("queue exploded"),
@@ -714,6 +741,39 @@ class DatasetWorkflowTests(TestCase):
         self.assertIn("queue exploded", job.error)
         self.assertEqual(DatasetBulkUploadJobItem.objects.count(), 1)
         self.assertEqual(mock_run.call_count, 1)
+
+    @patch(
+        "djapps.datasets.tasks.process_dataset_bulk_action",
+        side_effect=RuntimeError("publish exploded"),
+    )
+    def test_bulk_upload_task_cleans_up_dataset_file_when_publish_fails(self, mock_publish):
+        dataset = self.create_draft_dataset(slug="bulk-upload-cleanup")
+        job = DatasetBulkUploadJob.objects.create(
+            requested_by=self.admin,
+            total_count=1,
+        )
+        item = DatasetBulkUploadJobItem.objects.create(
+            job=job,
+            dataset=dataset,
+            uploaded_file=SimpleUploadedFile(
+                "cleanup.csv",
+                b"country,value\nTZ,10\n",
+                content_type="text/csv",
+            ),
+            filename="cleanup.csv",
+            is_primary=True,
+        )
+
+        run_bulk_upload_job(job.id)
+
+        item.refresh_from_db()
+        self.assertEqual(item.status, DatasetBulkUploadJobStatus.FAILED)
+        self.assertIsNone(item.dataset_file_id)
+        self.assertEqual(DatasetFile.objects.count(), 0)
+        self.assertEqual(os.listdir(self.media_dir.name), [])
+        self.assertEqual(item.result["status"], DatasetBulkUploadJobStatus.FAILED)
+        self.assertIn("publish exploded", item.result["error"])
+        self.assertEqual(mock_publish.call_count, 1)
 
     def test_admin_bulk_upload_rejects_invalid_dataset_version_without_saving_files(
         self,
