@@ -71,7 +71,7 @@ class OpenDatasetFixtureMixin:
         self.client = APIClient()
         self.user = User.objects.create_user(
             email="publisher@example.com",
-            password="password123",
+            password="Password123!",
             first_name="Data",
             last_name="Editor",
         )
@@ -731,7 +731,7 @@ class DeveloperAPIKeyManagementTests(OpenDatasetFixtureMixin, TestCase):
     def test_non_developer_cannot_manage_api_keys(self):
         outsider = User.objects.create_user(
             email="outsider@example.com",
-            password="password123",
+            password="Password123!",
         )
         self.client.force_authenticate(user=outsider)
 

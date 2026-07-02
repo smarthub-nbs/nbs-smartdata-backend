@@ -3,8 +3,13 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from django.conf import settings
 from django.core import signing
 from django.core.mail import send_mail
+from django.db.models import F
 from django.utils import timezone
 from rest_framework.exceptions import APIException, ValidationError
+from rest_framework_simplejwt.token_blacklist.models import (
+    BlacklistedToken,
+    OutstandingToken,
+)
 
 from ..models import User
 
@@ -22,6 +27,21 @@ def mark_user_logged_in(user):
     user.last_login = now
     user.last_login_at = now
     user.save(update_fields=["last_login", "last_login_at"])
+
+
+def revoke_user_refresh_tokens(user):
+    revoked_count = 0
+    outstanding_tokens = OutstandingToken.objects.filter(user=user)
+    for outstanding_token in outstanding_tokens.iterator():
+        _, created = BlacklistedToken.objects.get_or_create(token=outstanding_token)
+        revoked_count += int(created)
+    return revoked_count
+
+
+def invalidate_user_tokens(user):
+    User.objects.filter(pk=user.pk).update(token_version=F("token_version") + 1)
+    user.refresh_from_db(fields=["token_version"])
+    return revoke_user_refresh_tokens(user)
 
 
 def build_user_action_token(user, purpose):

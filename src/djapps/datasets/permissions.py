@@ -72,6 +72,18 @@ def can_delete_dataset(user, dataset):
     )
 
 
+def can_restore_dataset(user, dataset):
+    return bool(
+        user
+        and user.is_authenticated
+        and user.has_perm("datasets.delete_dataset")
+        and (
+            has_dataset_admin_access(user)
+            or (is_owner(user, dataset) and dataset.status in {DatasetStatus.DRAFT, DatasetStatus.REJECTED})
+        )
+    )
+
+
 def can_review_dataset(user):
     return bool(
         user
@@ -134,7 +146,7 @@ class CanAccessDataset(BasePermission):
 
 
 class CanPublishDataset(BasePermission):
-    message = "You do not have permission to publish datasets."
+    message = "You do not have permission to manage dataset publication."
 
     def has_permission(self, request, view):
         return can_publish_dataset(request.user)
@@ -151,6 +163,16 @@ class CanReviewDataset(BasePermission):
 
     def has_object_permission(self, request, view, obj):
         return self.has_permission(request, view)
+
+
+class CanRestoreDataset(BasePermission):
+    message = "You do not have permission to restore datasets."
+
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated)
+
+    def has_object_permission(self, request, view, obj):
+        return can_restore_dataset(request.user, obj)
 
 
 class CanViewDatasetAuditLog(BasePermission):

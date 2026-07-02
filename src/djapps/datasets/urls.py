@@ -2,6 +2,12 @@ from django.urls import path
 from rest_framework import routers
 
 from djapps.datasets.views import (
+    DatasetAdminBulkActionView,
+    DatasetBulkActionJobDetailView,
+    DatasetBulkActionJobListView,
+    DatasetAdminBulkUploadView,
+    DatasetBulkUploadJobDetailView,
+    DatasetBulkUploadJobListView,
     CategoryView,
     DatasetAdminQueueView,
     DatasetAdminQueueSummaryView,
@@ -10,20 +16,26 @@ from djapps.datasets.views import (
     DatasetMetadataView,
     DatasetPublishView,
     DatasetReviewView,
+    DatasetRestoreView,
     DatasetSubmitReviewView,
+    DatasetTransferOwnerView,
+    DatasetUnpublishView,
     DatasetStatusHistoryView,
     DatasetTagView,
     DatasetAuditLogView,
     DatasetVersionView,
     DatasetView,
     IndexingStatusView,
+    RegionView,
     TagView,
 )
 
 router = routers.DefaultRouter()
 router.register(r"categories", CategoryView, basename="dataset-category")
+router.register(r"regions", RegionView, basename="dataset-region")
 router.register(r"tags", TagView, basename="dataset-tag-taxonomy")
 router.register(r"versions", DatasetVersionView, basename="dataset-version")
+
 router.register(r"files", DatasetFileView, basename="dataset-file")
 router.register(r"tag-links", DatasetTagView, basename="dataset-tag-link")
 router.register(r"metadata", DatasetMetadataView, basename="dataset-metadata")
@@ -34,6 +46,36 @@ router.register(r"audit-logs", DatasetAuditLogView, basename="dataset-audit-log"
 urlpatterns = [
     path("", DatasetView.as_view(), name="dataset-list-create"),
     path("admin-queue/", DatasetAdminQueueView.as_view(), name="dataset-admin-queue"),
+    path(
+        "admin-queue/bulk-action/",
+        DatasetAdminBulkActionView.as_view(),
+        name="dataset-admin-queue-bulk-action",
+    ),
+    path(
+        "admin-queue/bulk-upload/",
+        DatasetAdminBulkUploadView.as_view(),
+        name="dataset-admin-queue-bulk-upload",
+    ),
+    path(
+        "admin-queue/bulk-action/jobs/",
+        DatasetBulkActionJobListView.as_view(),
+        name="dataset-admin-queue-bulk-action-job-list",
+    ),
+    path(
+        "admin-queue/bulk-action/jobs/<uuid:job_id>/",
+        DatasetBulkActionJobDetailView.as_view(),
+        name="dataset-admin-queue-bulk-action-job-detail",
+    ),
+    path(
+        "admin-queue/bulk-upload/jobs/",
+        DatasetBulkUploadJobListView.as_view(),
+        name="dataset-admin-queue-bulk-upload-job-list",
+    ),
+    path(
+        "admin-queue/bulk-upload/jobs/<uuid:job_id>/",
+        DatasetBulkUploadJobDetailView.as_view(),
+        name="dataset-admin-queue-bulk-upload-job-detail",
+    ),
     path(
         "admin-queue/summary/",
         DatasetAdminQueueSummaryView.as_view(),
@@ -54,6 +96,21 @@ urlpatterns = [
         "<uuid:dataset_id>/publish/",
         DatasetPublishView.as_view(),
         name="dataset-publish",
+    ),
+    path(
+        "<uuid:dataset_id>/unpublish/",
+        DatasetUnpublishView.as_view(),
+        name="dataset-unpublish",
+    ),
+    path(
+        "<uuid:dataset_id>/restore/",
+        DatasetRestoreView.as_view(),
+        name="dataset-restore",
+    ),
+    path(
+        "<uuid:dataset_id>/transfer-owner/",
+        DatasetTransferOwnerView.as_view(),
+        name="dataset-transfer-owner",
     ),
 ]
 

@@ -19,9 +19,7 @@ DEFAULT_GROUPS = [
     ROLE_SUPER_ADMIN,
 ]
 
-DATASET_READ_PERMISSIONS = (
-    "datasets.view_dataset",
-)
+DATASET_READ_PERMISSIONS = ("datasets.view_dataset",)
 
 DATASET_EDITOR_PERMISSIONS = (
     "datasets.view_dataset",
@@ -55,9 +53,7 @@ USER_ADMIN_PERMISSIONS = (
     "user_management.change_user",
 )
 
-SUPER_ADMIN_EXTRA_PERMISSIONS = (
-    "user_management.delete_user",
-)
+SUPER_ADMIN_EXTRA_PERMISSIONS = ("user_management.delete_user",)
 
 DEVELOPER_API_PERMISSIONS = (
     "gateway.add_apiconsumer",
@@ -110,8 +106,11 @@ def resolve_permissions(permission_labels):
 
 
 def ensure_group_permissions(group_name):
+    if group_name not in GROUP_PERMISSION_MAP:
+        raise ValueError(f"Unknown group name: {group_name}")
+
     group, _ = Group.objects.get_or_create(name=group_name)
-    permissions, missing = resolve_permissions(GROUP_PERMISSION_MAP.get(group_name, ()))
+    permissions, missing = resolve_permissions(GROUP_PERMISSION_MAP[group_name])
     group.permissions.set(permissions)
     return group, missing
 
@@ -130,6 +129,13 @@ def sync_user_groups(user, groups):
     if not getattr(user, "is_superuser", False):
         desired_names.add(ROLE_USER)
 
-    resolved_groups = [ensure_group_permissions(name)[0] for name in sorted(desired_names)]
+    group_by_name = {group.name: group for group in groups}
+    resolved_groups = []
+    for name in sorted(desired_names):
+        if name in GROUP_PERMISSION_MAP:
+            resolved_groups.append(ensure_group_permissions(name)[0])
+        else:
+            resolved_groups.append(group_by_name[name])
+
     user.groups.set(resolved_groups)
     return resolved_groups

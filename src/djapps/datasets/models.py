@@ -42,6 +42,34 @@ class DatasetFrequency:
     )
 
 
+class DatasetBulkActionJobStatus:
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+    CHOICES = (
+        (QUEUED, "Queued"),
+        (RUNNING, "Running"),
+        (COMPLETED, "Completed"),
+        (FAILED, "Failed"),
+    )
+
+
+class DatasetBulkUploadJobStatus:
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+    CHOICES = (
+        (QUEUED, "Queued"),
+        (RUNNING, "Running"),
+        (COMPLETED, "Completed"),
+        (FAILED, "Failed"),
+    )
+
+
 def generate_unique_slug(instance, source_value, *, fallback="item"):
     slug_field = instance._meta.get_field("slug")
     max_length = slug_field.max_length
@@ -60,7 +88,16 @@ def generate_unique_slug(instance, source_value, *, fallback="item"):
 
     return slug
 
+class Region(BaseModel):
+    name = models.CharField(max_length=50)
+    
+    class Meta:
+        db_table="regions"
+        verbose_name="Region"
+        verbose_name_plural="Regions"
 
+    def __str__(self):
+        return self.name
 class Category(BaseModel):
 
     name = models.CharField(max_length=50)
@@ -309,3 +346,114 @@ class DatasetAuditLog(BaseModel):
 
     def __str__(self):
         return f"{self.dataset.slug} - {self.action} at {self.created_at}"
+
+
+class DatasetBulkActionJob(BaseModel):
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="dataset_bulk_action_jobs",
+    )
+    action = models.CharField(max_length=20)
+    status = models.CharField(
+        max_length=20,
+        choices=DatasetBulkActionJobStatus.CHOICES,
+        default=DatasetBulkActionJobStatus.QUEUED,
+    )
+    dataset_ids = models.JSONField(default=list, blank=True)
+    reason = models.TextField(blank=True)
+    audit_context = models.JSONField(default=dict, blank=True)
+    task_id = models.CharField(max_length=255, blank=True)
+    requested_count = models.PositiveIntegerField(default=0)
+    processed_count = models.PositiveIntegerField(default=0)
+    failed_count = models.PositiveIntegerField(default=0)
+    processed = models.JSONField(default=list, blank=True)
+    failed = models.JSONField(default=list, blank=True)
+    error = models.TextField(blank=True)
+    started_at = models.DateTimeField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = "dataset_bulk_action_jobs"
+        verbose_name = "Dataset Bulk Action Job"
+        verbose_name_plural = "Dataset Bulk Action Jobs"
+
+    def __str__(self):
+        return f"{self.action} ({self.status})"
+
+
+class DatasetBulkUploadJob(BaseModel):
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="dataset_bulk_upload_jobs",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=DatasetBulkActionJobStatus.CHOICES,
+        default=DatasetBulkActionJobStatus.QUEUED,
+    )
+    publish_after_upload = models.BooleanField(default=False)
+    reason = models.TextField(blank=True)
+    audit_context = models.JSONField(default=dict, blank=True)
+    task_id = models.CharField(max_length=255, blank=True)
+    total_count = models.PositiveIntegerField(default=0)
+    processed_count = models.PositiveIntegerField(default=0)
+    failed_count = models.PositiveIntegerField(default=0)
+    error = models.TextField(blank=True)
+    started_at = models.DateTimeField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = "dataset_bulk_upload_jobs"
+        verbose_name = "Dataset Bulk Upload Job"
+        verbose_name_plural = "Dataset Bulk Upload Jobs"
+
+    def __str__(self):
+        return f"bulk upload ({self.status})"
+
+
+class DatasetBulkUploadJobItem(BaseModel):
+    job = models.ForeignKey(
+        DatasetBulkUploadJob,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.PROTECT,
+        related_name="bulk_upload_items",
+    )
+    dataset_version = models.ForeignKey(
+        DatasetVersion,
+        on_delete=models.PROTECT,
+        related_name="+",
+        blank=True,
+        null=True,
+    )
+    uploaded_file = models.FileField(upload_to="dataset_bulk_uploads/")
+    filename = models.CharField(max_length=255)
+    is_primary = models.BooleanField(default=True)
+    status = models.CharField(
+        max_length=20,
+        choices=DatasetBulkActionJobStatus.CHOICES,
+        default=DatasetBulkActionJobStatus.QUEUED,
+    )
+    result = models.JSONField(default=dict, blank=True)
+    error = models.TextField(blank=True)
+    dataset_file = models.ForeignKey(
+        DatasetFile,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        blank=True,
+        null=True,
+    )
+    processed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = "dataset_bulk_upload_job_items"
+        verbose_name = "Dataset Bulk Upload Job Item"
+        verbose_name_plural = "Dataset Bulk Upload Job Items"
+
+    def __str__(self):
+        return f"{self.filename} ({self.status})"

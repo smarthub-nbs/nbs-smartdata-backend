@@ -124,10 +124,19 @@ DATASET_ADMIN_QUEUE_PAYLOAD = inline_serializer(
     },
 )
 
-DATASET_FILE_UPLOAD_REQUEST = OpenApiRequest(
+DATASET_FILE_MULTIPART_REQUEST = OpenApiRequest(
     request=DatasetFileSerializer,
     encoding={"file": {"contentType": "*/*"}},
 )
+
+DATASET_FILE_CREATE_REQUEST = {
+    "multipart/form-data": DATASET_FILE_MULTIPART_REQUEST,
+}
+
+DATASET_FILE_UPDATE_REQUEST = {
+    "application/json": DatasetFileSerializer,
+    "multipart/form-data": DATASET_FILE_MULTIPART_REQUEST,
+}
 
 DATASET_FILE_UPLOAD_DESCRIPTION = (
     "Upload a dataset file using multipart form data. "

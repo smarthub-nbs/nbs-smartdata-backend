@@ -17,6 +17,7 @@ Smarthub is a Django backend for user management, dataset workflows, and public/
 - Python 3.13+
 - `uv`
 - PostgreSQL
+- Redis
 
 ## Start The Project After Clone
 
@@ -37,26 +38,34 @@ cd src
 - `DB_PASSWORD`
 - `DB_HOST`
 - `DB_PORT`
+- `CELERY_BROKER_URL`
+- `CELERY_RESULT_BACKEND`
 
-3. Install dependencies:
+3. Start Redis:
+
+```bash
+docker compose up -d redis
+```
+
+4. Install dependencies:
 
 ```bash
 uv sync
 ```
 
-4. Apply database migrations:
+5. Apply database migrations:
 
 ```bash
 uv run python manage.py migrate
 ```
 
-5. Create an admin user if you need Django admin access:
+6. Create an admin user if you need Django admin access:
 
 ```bash
 uv run python manage.py createsuperuser
 ```
 
-6. Start the development server:
+7. Start the development server:
 
 ```bash
 uv run python manage.py runserver
