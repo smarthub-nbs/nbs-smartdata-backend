@@ -118,7 +118,7 @@ from djapps.datasets.tasks import run_bulk_action_job
 from djapps.datasets.tasks import run_bulk_upload_job
 from djapps.user_management.api.permissions import HasPermission
 from utils.pagination import CustomPagination
-from utils.query import build_identifier_filter
+from utils.query import build_identifier_filter, parse_optional_bool
 
 
 class PublicReadAdminWriteViewSet(StandardizedModelViewSet):
@@ -1063,8 +1063,16 @@ class DatasetAdminBulkUploadView(StandardizedAPIView):
             "datasets.view_all_dataset",
             "datasets.review_dataset",
         ]
-        if self.request and self.request.data.get("publish_after_upload", False):
-            permissions.append("datasets.publish_dataset")
+        if self.request:
+            try:
+                publish_after_upload = parse_optional_bool(
+                    self.request.data.get("publish_after_upload", False),
+                    "publish_after_upload",
+                )
+            except ValidationError:
+                publish_after_upload = False
+            if publish_after_upload:
+                permissions.append("datasets.publish_dataset")
         return tuple(permissions)
 
     def get_dataset_queryset(self):
