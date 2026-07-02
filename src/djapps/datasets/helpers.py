@@ -3,7 +3,12 @@ from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 
 from djapps.datasets.audit import log_dataset_event
-from djapps.datasets.models import DatasetFile, DatasetStatus, DatasetStatusHistory, FileValidationStatus
+from djapps.datasets.models import (
+    DatasetFile,
+    DatasetStatus,
+    DatasetStatusHistory,
+    FileValidationStatus,
+)
 from djapps.datasets.permissions import has_dataset_admin_access
 
 
@@ -64,7 +69,7 @@ def process_dataset_bulk_action(
         final_reason = reason
         audit_action = "dataset_review_rejected"
         update_fields = ["status", "visibility", "updated_at"]
-    else:
+    elif action == "publish":
         if dataset.status != DatasetStatus.APPROVED:
             raise ValidationError("Only approved datasets can be published.")
         dataset.status = DatasetStatus.PUBLISHED
@@ -73,6 +78,8 @@ def process_dataset_bulk_action(
         final_reason = reason or "Published via API."
         audit_action = "dataset_published"
         update_fields = ["status", "visibility", "published_at", "updated_at"]
+    else:
+        raise ValidationError({"action": ["Unsupported bulk action."]})
 
     dataset.save(update_fields=update_fields)
     create_status_history(dataset, actor, old_status, dataset.status, final_reason)
@@ -111,7 +118,9 @@ def validate_dataset_ready_for_review(dataset):
         ):
             value = getattr(metadata, field_name)
             if value in {None, ""}:
-                metadata_errors[label] = [f"{label.replace('_', ' ').title()} is required."]
+                metadata_errors[label] = [
+                    f"{label.replace('_', ' ').title()} is required."
+                ]
         if metadata_errors:
             errors["metadata"] = metadata_errors
 
@@ -129,7 +138,9 @@ def validate_dataset_ready_for_review(dataset):
             validation_status=FileValidationStatus.VALIDATED,
             is_safe=True,
         ).exists():
-            errors["files"] = ["At least one validated safe file is required before review."]
+            errors["files"] = [
+                "At least one validated safe file is required before review."
+            ]
 
     if errors:
         raise ValidationError(errors)

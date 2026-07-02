@@ -15,6 +15,7 @@ from djapps.datasets.models import (
 )
 from djapps.datasets.serializers import DatasetFileSerializer
 
+
 @shared_task(name="datasets.bulk_action_probe")
 def bulk_action_probe(*, action, dataset_ids):
     return {
@@ -39,7 +40,10 @@ def run_bulk_action_job(self, job_id):
     job.save(update_fields=["status", "started_at", "task_id", "error", "updated_at"])
 
     dataset_ids = job.dataset_ids or []
-    datasets = Dataset.all_objects.filter(id__in=dataset_ids)
+    datasets = Dataset.all_objects.filter(
+        id__in=dataset_ids,
+        deleted_at__isnull=True,
+    )
     dataset_map = {str(dataset.id): dataset for dataset in datasets}
 
     processed = []
@@ -97,9 +101,7 @@ def run_bulk_action_job(self, job_id):
         job.status = DatasetBulkActionJobStatus.FAILED
         job.error = str(exc)
         job.completed_at = timezone.now()
-        job.save(
-            update_fields=["status", "error", "completed_at", "updated_at"]
-        )
+        job.save(update_fields=["status", "error", "completed_at", "updated_at"])
         raise
 
     return {
@@ -134,7 +136,9 @@ def run_bulk_upload_job(self, job_id):
     failed = []
 
     try:
-        for item in job.items.select_related("dataset", "dataset_version").order_by("created_at", "id"):
+        for item in job.items.select_related("dataset", "dataset_version").order_by(
+            "created_at", "id"
+        ):
             item.status = DatasetBulkUploadJobStatus.RUNNING
             item.error = ""
             item.save(update_fields=["status", "error", "updated_at"])
@@ -144,7 +148,9 @@ def run_bulk_upload_job(self, job_id):
                     data={
                         "dataset_id": str(item.dataset_id),
                         "dataset_version_id": (
-                            str(item.dataset_version_id) if item.dataset_version_id else None
+                            str(item.dataset_version_id)
+                            if item.dataset_version_id
+                            else None
                         ),
                         "file": item.uploaded_file,
                         "is_primary": item.is_primary,
@@ -188,7 +194,11 @@ def run_bulk_upload_job(self, job_id):
                 )
                 processed.append(result_payload)
             except Exception as exc:
-                error_message = format_validation_error(exc) if isinstance(exc, ValidationError) else str(exc)
+                error_message = (
+                    format_validation_error(exc)
+                    if isinstance(exc, ValidationError)
+                    else str(exc)
+                )
                 item.error = error_message
                 item.result = {
                     "dataset_id": str(item.dataset_id),

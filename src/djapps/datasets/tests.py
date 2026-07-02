@@ -1,6 +1,8 @@
 import io
 import json
+import os
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -16,6 +18,7 @@ from .models import (
     DatasetBulkActionJob,
     DatasetBulkActionJobStatus,
     DatasetBulkUploadJob,
+    DatasetBulkUploadJobItem,
     DatasetBulkUploadJobStatus,
     DatasetFile,
     DatasetMetadata,
@@ -289,7 +292,9 @@ class DatasetWorkflowTests(TestCase):
             format="json",
         )
         self.assertEqual(duplicate_category_response.status_code, 201)
-        self.assertEqual(duplicate_category_response.data["data"]["slug"], "population-2")
+        self.assertEqual(
+            duplicate_category_response.data["data"]["slug"], "population-2"
+        )
 
         tag_response = self.client.post(
             "/api/v1/dataset/tags/",
@@ -471,8 +476,12 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(draft_dataset.status, DatasetStatus.DRAFT)
 
     def test_admin_bulk_action_publishes_approved_datasets(self):
-        approved_dataset = self.make_dataset_ready_for_review(slug="bulk-publish-approved")
-        in_review_dataset = self.make_dataset_ready_for_review(slug="bulk-publish-in-review")
+        approved_dataset = self.make_dataset_ready_for_review(
+            slug="bulk-publish-approved"
+        )
+        in_review_dataset = self.make_dataset_ready_for_review(
+            slug="bulk-publish-in-review"
+        )
 
         self.assertEqual(self.submit_for_review(approved_dataset).status_code, 200)
         self.assertEqual(self.approve_dataset(approved_dataset).status_code, 200)
@@ -545,10 +554,14 @@ class DatasetWorkflowTests(TestCase):
         list_payload = list_response.data["data"]
         self.assertGreaterEqual(list_payload["pagination"]["total_items"], 1)
         self.assertEqual(list_payload["items"][0]["id"], job_id)
-        self.assertEqual(list_payload["items"][0]["status"], DatasetBulkActionJobStatus.COMPLETED)
+        self.assertEqual(
+            list_payload["items"][0]["status"], DatasetBulkActionJobStatus.COMPLETED
+        )
         self.assertEqual(list_payload["items"][0]["processed_count"], 1)
 
-        detail_response = self.client.get(f"/api/v1/dataset/admin-queue/bulk-action/jobs/{job_id}/")
+        detail_response = self.client.get(
+            f"/api/v1/dataset/admin-queue/bulk-action/jobs/{job_id}/"
+        )
         self.assertEqual(detail_response.status_code, 200)
         self.assertTrue(detail_response.data["success"])
         detail_payload = detail_response.data["data"]
@@ -557,7 +570,9 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(detail_payload["reason"], "Queued for inspection.")
         self.assertEqual(detail_payload["processed_count"], 1)
         self.assertEqual(detail_payload["failed_count"], 0)
-        self.assertEqual(detail_payload["processed"][0]["dataset_id"], str(review_ready_dataset.id))
+        self.assertEqual(
+            detail_payload["processed"][0]["dataset_id"], str(review_ready_dataset.id)
+        )
 
     def test_admin_bulk_action_job_endpoints_require_dataset_admin_permissions(self):
         response = self.client.get("/api/v1/dataset/admin-queue/bulk-action/jobs/")
@@ -607,8 +622,12 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(job.processed_count, 2)
         self.assertEqual(job.failed_count, 0)
 
-        self.assertEqual(DatasetFile.objects.filter(dataset_version__dataset=dataset_one).count(), 1)
-        self.assertEqual(DatasetFile.objects.filter(dataset_version__dataset=dataset_two).count(), 1)
+        self.assertEqual(
+            DatasetFile.objects.filter(dataset_version__dataset=dataset_one).count(), 1
+        )
+        self.assertEqual(
+            DatasetFile.objects.filter(dataset_version__dataset=dataset_two).count(), 1
+        )
 
         list_response = self.client.get(
             "/api/v1/dataset/admin-queue/bulk-upload/jobs/",
@@ -616,10 +635,14 @@ class DatasetWorkflowTests(TestCase):
         )
         self.assertEqual(list_response.status_code, 200)
         self.assertTrue(list_response.data["success"])
-        self.assertGreaterEqual(list_response.data["data"]["pagination"]["total_items"], 1)
+        self.assertGreaterEqual(
+            list_response.data["data"]["pagination"]["total_items"], 1
+        )
         self.assertEqual(list_response.data["data"]["items"][0]["id"], job_id)
 
-        detail_response = self.client.get(f"/api/v1/dataset/admin-queue/bulk-upload/jobs/{job_id}/")
+        detail_response = self.client.get(
+            f"/api/v1/dataset/admin-queue/bulk-upload/jobs/{job_id}/"
+        )
         self.assertEqual(detail_response.status_code, 200)
         self.assertTrue(detail_response.data["success"])
         detail_payload = detail_response.data["data"]
@@ -635,8 +658,123 @@ class DatasetWorkflowTests(TestCase):
         response = self.client.get("/api/v1/dataset/admin-queue/bulk-upload/jobs/")
         self.assertEqual(response.status_code, 403)
 
+    def test_admin_bulk_upload_requires_publish_permission_for_publish_after_upload(
+        self,
+    ):
+        dataset = self.create_draft_dataset(slug="bulk-upload-publish-perm")
+
+        self.client.force_authenticate(user=self.editor)
+        response = self.client.post(
+            "/api/v1/dataset/admin-queue/bulk-upload/",
+            {
+                "items": json.dumps([{"dataset_id": str(dataset.id)}]),
+                "files": [
+                    SimpleUploadedFile(
+                        "bulk-upload.csv",
+                        b"country,value\nTZ,10\n",
+                        content_type="text/csv",
+                    )
+                ],
+                "publish_after_upload": True,
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(response.data["success"])
+        self.assertEqual(DatasetBulkUploadJob.objects.count(), 0)
+
+    @patch(
+        "djapps.datasets.views.run_bulk_upload_job.run",
+        side_effect=RuntimeError("queue exploded"),
+    )
+    def test_admin_bulk_upload_returns_error_when_enqueue_fails(self, mock_run):
+        dataset = self.create_draft_dataset(slug="bulk-upload-enqueue-failure")
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            "/api/v1/dataset/admin-queue/bulk-upload/",
+            {
+                "items": json.dumps([{"dataset_id": str(dataset.id)}]),
+                "files": [
+                    SimpleUploadedFile(
+                        "bulk-upload.csv",
+                        b"country,value\nTZ,10\n",
+                        content_type="text/csv",
+                    )
+                ],
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data["success"])
+        job = DatasetBulkUploadJob.objects.get()
+        self.assertEqual(job.status, DatasetBulkUploadJobStatus.FAILED)
+        self.assertIn("queue exploded", job.error)
+        self.assertEqual(DatasetBulkUploadJobItem.objects.count(), 1)
+        self.assertEqual(mock_run.call_count, 1)
+
+    def test_admin_bulk_upload_rejects_invalid_dataset_version_without_saving_files(
+        self,
+    ):
+        dataset_one = self.create_draft_dataset(slug="bulk-upload-validation-a")
+        dataset_two = self.create_draft_dataset(slug="bulk-upload-validation-b")
+        dataset_version_one = DatasetVersion.objects.create(
+            dataset=dataset_one,
+            created_by=self.editor,
+            version_number="1",
+        )
+        DatasetVersion.objects.create(
+            dataset=dataset_two,
+            created_by=self.editor,
+            version_number="1",
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            "/api/v1/dataset/admin-queue/bulk-upload/",
+            {
+                "items": json.dumps(
+                    [
+                        {
+                            "dataset_id": str(dataset_one.id),
+                            "dataset_version_id": str(dataset_version_one.id),
+                            "is_primary": True,
+                        },
+                        {
+                            "dataset_id": str(dataset_two.id),
+                            "dataset_version_id": str(dataset_version_one.id),
+                            "is_primary": True,
+                        },
+                    ]
+                ),
+                "files": [
+                    SimpleUploadedFile(
+                        "bulk-upload-a.csv",
+                        b"country,value\nTZ,10\n",
+                        content_type="text/csv",
+                    ),
+                    SimpleUploadedFile(
+                        "bulk-upload-b.csv",
+                        b"country,value\nKE,20\n",
+                        content_type="text/csv",
+                    ),
+                ],
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data["success"])
+        self.assertEqual(DatasetBulkUploadJob.objects.count(), 0)
+        self.assertEqual(DatasetBulkUploadJobItem.objects.count(), 0)
+        self.assertEqual(os.listdir(self.media_dir.name), [])
+
     def test_admin_bulk_action_reject_requires_reason(self):
-        review_ready_dataset = self.make_dataset_ready_for_review(slug="bulk-reject-no-reason")
+        review_ready_dataset = self.make_dataset_ready_for_review(
+            slug="bulk-reject-no-reason"
+        )
         self.assertEqual(self.submit_for_review(review_ready_dataset).status_code, 200)
 
         self.client.force_authenticate(user=self.admin)
@@ -865,7 +1003,11 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(discovery_response.status_code, 200)
         self.assertEqual(discovery_response.data["data"], [])
 
-        actions = set(DatasetAuditLog.objects.filter(dataset=dataset).values_list("action", flat=True))
+        actions = set(
+            DatasetAuditLog.objects.filter(dataset=dataset).values_list(
+                "action", flat=True
+            )
+        )
         self.assertIn("dataset_published", actions)
         self.assertIn("dataset_unpublished", actions)
 
@@ -907,7 +1049,11 @@ class DatasetWorkflowTests(TestCase):
         file_response = self.client.get(f"/api/v1/dataset/files/{dataset_file_id}/")
         self.assertEqual(file_response.status_code, 200)
 
-        actions = set(DatasetAuditLog.objects.filter(dataset=dataset).values_list("action", flat=True))
+        actions = set(
+            DatasetAuditLog.objects.filter(dataset=dataset).values_list(
+                "action", flat=True
+            )
+        )
         self.assertIn("dataset_deleted", actions)
         self.assertIn("dataset_restored", actions)
 
@@ -961,7 +1107,9 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(new_owner_detail.status_code, 200)
 
         actions = set(
-            DatasetAuditLog.objects.filter(dataset=dataset).values_list("action", flat=True)
+            DatasetAuditLog.objects.filter(dataset=dataset).values_list(
+                "action", flat=True
+            )
         )
         self.assertIn("dataset_owner_transferred", actions)
 
@@ -1033,7 +1181,9 @@ class DatasetWorkflowTests(TestCase):
         self.assertFalse(payload["has_more"])
 
         actions = set(
-            DatasetAuditLog.objects.filter(dataset=dataset).values_list("action", flat=True)
+            DatasetAuditLog.objects.filter(dataset=dataset).values_list(
+                "action", flat=True
+            )
         )
         self.assertIn("file_data_accessed", actions)
 
@@ -1164,20 +1314,34 @@ class DatasetWorkflowTests(TestCase):
         )
         self.assertEqual(discovery_response.status_code, 200)
         self.assertEqual(len(discovery_response.data["data"]), 1)
-        self.assertEqual(discovery_response.data["data"][0]["slug"], "public-climate-data")
+        self.assertEqual(
+            discovery_response.data["data"][0]["slug"], "public-climate-data"
+        )
 
         detail_response = self.client.get(f"/api/v1/dataset/{dataset.id}/")
         self.assertEqual(detail_response.status_code, 200)
-        self.assertEqual(detail_response.data["data"]["status"], DatasetStatus.PUBLISHED)
-        self.assertEqual(detail_response.data["data"]["metadata"][0]["region"], "East Africa")
-        self.assertEqual(detail_response.data["data"]["metadata"][0]["frequency"], "annual")
+        self.assertEqual(
+            detail_response.data["data"]["status"], DatasetStatus.PUBLISHED
+        )
+        self.assertEqual(
+            detail_response.data["data"]["metadata"][0]["region"], "East Africa"
+        )
+        self.assertEqual(
+            detail_response.data["data"]["metadata"][0]["frequency"], "annual"
+        )
 
         dataset_file = dataset.versions.first().files.first()
-        download_response = self.client.get(f"/api/v1/dataset/files/{dataset_file.id}/download/")
+        download_response = self.client.get(
+            f"/api/v1/dataset/files/{dataset_file.id}/download/"
+        )
         self.assertEqual(download_response.status_code, 200)
         self.assertIn("attachment;", download_response.headers["Content-Disposition"])
 
-        actions = set(DatasetAuditLog.objects.filter(dataset=dataset).values_list("action", flat=True))
+        actions = set(
+            DatasetAuditLog.objects.filter(dataset=dataset).values_list(
+                "action", flat=True
+            )
+        )
         self.assertIn("dataset_review_submitted", actions)
         self.assertIn("dataset_review_approved", actions)
         self.assertIn("dataset_published", actions)

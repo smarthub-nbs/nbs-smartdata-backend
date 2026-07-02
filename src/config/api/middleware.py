@@ -58,14 +58,11 @@ class FrontendCredentialCorsMiddleware:
         )
 
         if request.method == "OPTIONS":
-            requested_headers = request.headers.get("Access-Control-Request-Headers")
             response["Access-Control-Allow-Methods"] = ", ".join(
                 settings.CORS_ALLOW_METHODS
             )
-            response["Access-Control-Allow-Headers"] = (
-                requested_headers
-                if requested_headers
-                else ", ".join(settings.CORS_ALLOW_HEADERS)
+            response["Access-Control-Allow-Headers"] = ", ".join(
+                settings.CORS_ALLOW_HEADERS
             )
             response["Access-Control-Max-Age"] = str(settings.CORS_PREFLIGHT_MAX_AGE)
 

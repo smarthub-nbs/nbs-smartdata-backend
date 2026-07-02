@@ -11,11 +11,13 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
     OpenApiExample,
     OpenApiParameter,
+    OpenApiRequest,
     OpenApiResponse,
     extend_schema,
     extend_schema_view,
+    inline_serializer,
 )
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -80,8 +82,6 @@ from djapps.datasets.serializers import (
     DatasetBulkUploadJobSerializer,
     DatasetBulkUploadJobDetailSerializer,
     DatasetBulkUploadJobListPayloadSerializer,
-    DatasetBulkUploadJobItemSerializer,
-    DatasetBulkUploadItemInputSerializer,
     DatasetAuditLogSerializer,
     DatasetDetailSerializer,
     DatasetFileSerializer,
@@ -507,7 +507,9 @@ class DatasetBaseView(StandardizedAPIView):
         )
 
     def get_object(self):
-        dataset = get_object_or_404(self.get_base_queryset(), pk=self.kwargs["dataset_id"])
+        dataset = get_object_or_404(
+            self.get_base_queryset(), pk=self.kwargs["dataset_id"]
+        )
         self.check_object_permissions(self.request, dataset)
         return dataset
 
@@ -542,7 +544,9 @@ class DatasetBaseView(StandardizedAPIView):
         category = params.get("category")
         if category:
             queryset = queryset.filter(
-                build_identifier_filter("category__id", "category__slug__iexact", category)
+                build_identifier_filter(
+                    "category__id", "category__slug__iexact", category
+                )
             )
 
         tag = params.get("tag")
@@ -749,12 +753,16 @@ class DatasetAdminQueueView(DatasetBaseView):
         },
     )
     def get(self, request):
-        queryset = self.annotate_admin_queue_queryset(
-            self.filter_dataset_queryset(
-                self.get_base_queryset(),
-                allow_status_filter=True,
+        queryset = (
+            self.annotate_admin_queue_queryset(
+                self.filter_dataset_queryset(
+                    self.get_base_queryset(),
+                    allow_status_filter=True,
+                )
             )
-        ).order_by("-updated_at", "-created_at").distinct()
+            .order_by("-updated_at", "-created_at")
+            .distinct()
+        )
         paginator, page = self.paginate_queryset(queryset)
         serializer = self.serializer_class(page, many=True)
         return paginator.get_paginated_response(serializer.data)
@@ -825,7 +833,9 @@ class DatasetBulkActionJobBaseView(StandardizedAPIView):
         queryset = self.get_queryset()
         status_value = self.request.query_params.get("status")
         if status_value:
-            allowed_statuses = {choice for choice, _label in DatasetBulkActionJobStatus.CHOICES}
+            allowed_statuses = {
+                choice for choice, _label in DatasetBulkActionJobStatus.CHOICES
+            }
             if status_value not in allowed_statuses:
                 raise ValidationError(
                     {
@@ -944,7 +954,9 @@ class DatasetBulkUploadJobBaseView(StandardizedAPIView):
         queryset = self.get_queryset()
         status_value = self.request.query_params.get("status")
         if status_value:
-            allowed_statuses = {choice for choice, _label in DatasetBulkUploadJobStatus.CHOICES}
+            allowed_statuses = {
+                choice for choice, _label in DatasetBulkUploadJobStatus.CHOICES
+            }
             if status_value not in allowed_statuses:
                 raise ValidationError(
                     {
@@ -1041,16 +1053,22 @@ class DatasetBulkUploadJobDetailView(DatasetBulkUploadJobBaseView):
 
 class DatasetAdminBulkUploadView(StandardizedAPIView):
     permission_classes = [HasPermission]
-    required_permissions = (
-        "datasets.view_all_dataset",
-        "datasets.review_dataset",
-    )
     parser_classes = (JSONParser, MultiPartParser, FormParser)
     serializer_class = DatasetBulkUploadJobCreateSerializer
     response_serializer_class = DatasetBulkUploadJobSerializer
 
+    @property
+    def required_permissions(self):
+        permissions = [
+            "datasets.view_all_dataset",
+            "datasets.review_dataset",
+        ]
+        if self.request and self.request.data.get("publish_after_upload", False):
+            permissions.append("datasets.publish_dataset")
+        return tuple(permissions)
+
     def get_dataset_queryset(self):
-        return Dataset.all_objects.select_related("category", "publisher_user")
+        return Dataset.objects.select_related("category", "publisher_user")
 
     def _parse_items(self, request):
         raw_items = request.data.get("items")
@@ -1076,7 +1094,11 @@ class DatasetAdminBulkUploadView(StandardizedAPIView):
         files = request.FILES.getlist("files")
         if len(files) != len(serializer.validated_data["items"]):
             raise ValidationError(
-                {"files": ["The number of files must match the number of upload items."]}
+                {
+                    "files": [
+                        "The number of files must match the number of upload items."
+                    ]
+                }
             )
         return serializer.validated_data, files
 
@@ -1091,7 +1113,36 @@ class DatasetAdminBulkUploadView(StandardizedAPIView):
             "Use a JSON 'items' field plus a matching repeated 'files' list. "
             "Each item must include dataset_id and may include dataset_version_id and is_primary."
         ),
-        request=DatasetBulkUploadJobCreateSerializer,
+        request={
+            "multipart/form-data": OpenApiRequest(
+                request=inline_serializer(
+                    name="DatasetBulkUploadMultipartRequest",
+                    fields={
+                        "items": serializers.CharField(
+                            help_text="JSON array of upload items.",
+                        ),
+                        "files": serializers.ListField(
+                            child=serializers.FileField(),
+                            required=True,
+                            help_text="Repeated uploaded files.",
+                        ),
+                        "publish_after_upload": serializers.BooleanField(
+                            required=False,
+                            default=False,
+                        ),
+                        "reason": serializers.CharField(
+                            required=False,
+                            allow_blank=True,
+                            max_length=500,
+                        ),
+                    },
+                ),
+                encoding={
+                    "items": {"contentType": "application/json"},
+                    "files": {"style": "form", "explode": True},
+                },
+            )
+        },
         responses={
             202: success_response_schema(
                 "DatasetAdminBulkUploadSuccessResponse",
@@ -1120,7 +1171,9 @@ class DatasetAdminBulkUploadView(StandardizedAPIView):
             )
 
             for item_data, uploaded_file in zip(items, files):
-                dataset = get_object_or_404(self.get_dataset_queryset(), pk=item_data["dataset_id"])
+                dataset = get_object_or_404(
+                    self.get_dataset_queryset(), pk=item_data["dataset_id"]
+                )
                 dataset_version_id = item_data.get("dataset_version_id")
                 dataset_version = None
                 if dataset_version_id:
@@ -1172,6 +1225,7 @@ class DatasetAdminBulkUploadView(StandardizedAPIView):
                 error=str(exc),
                 completed_at=timezone.now(),
             )
+            raise ValidationError(str(exc))
 
 
 class DatasetAdminBulkActionView(DatasetBaseView):
@@ -1185,7 +1239,10 @@ class DatasetAdminBulkActionView(DatasetBaseView):
             "datasets.view_all_dataset",
             "datasets.review_dataset",
         ]
-        if self.request.data.get("action") == DatasetAdminBulkActionSerializer.ACTION_PUBLISH:
+        if (
+            self.request.data.get("action")
+            == DatasetAdminBulkActionSerializer.ACTION_PUBLISH
+        ):
             permissions.append("datasets.publish_dataset")
         return tuple(permissions)
 
@@ -1210,6 +1267,7 @@ class DatasetAdminBulkActionView(DatasetBaseView):
                 error=str(exc),
                 completed_at=timezone.now(),
             )
+            raise ValidationError(str(exc))
 
     @extend_schema(
         tags=["Dataset Workflow"],
@@ -1286,7 +1344,9 @@ class DatasetDetailView(DatasetBaseView):
         },
     )
     def get(self, request, dataset_id):
-        return Response(self.serialize_detail(self.get_object()), status=status.HTTP_200_OK)
+        return Response(
+            self.serialize_detail(self.get_object()), status=status.HTTP_200_OK
+        )
 
     @extend_schema(
         tags=["Datasets"],
@@ -1312,7 +1372,9 @@ class DatasetDetailView(DatasetBaseView):
     )
     def patch(self, request, dataset_id):
         dataset = self.get_object()
-        serializer = self.write_serializer_class(dataset, data=request.data, partial=True)
+        serializer = self.write_serializer_class(
+            dataset, data=request.data, partial=True
+        )
         serializer.is_valid(raise_exception=True)
         dataset = serializer.save()
         log_dataset_event(
@@ -1382,11 +1444,17 @@ class DatasetSubmitReviewView(DatasetBaseView):
     def post(self, request, dataset_id):
         dataset = get_object_or_404(self.get_base_queryset(), pk=dataset_id)
         if not can_change_dataset(request.user, dataset):
-            raise PermissionDenied("You do not have permission to submit this dataset for review.")
+            raise PermissionDenied(
+                "You do not have permission to submit this dataset for review."
+            )
 
         if dataset.status not in {DatasetStatus.DRAFT, DatasetStatus.REJECTED}:
             raise ValidationError(
-                {"status": ["Only draft or rejected datasets can be submitted for review."]}
+                {
+                    "status": [
+                        "Only draft or rejected datasets can be submitted for review."
+                    ]
+                }
             )
 
         serializer = DatasetSubmitReviewSerializer(data=request.data)
@@ -1448,13 +1516,18 @@ class DatasetReviewView(DatasetBaseView):
         serializer.is_valid(raise_exception=True)
 
         if dataset.status != DatasetStatus.IN_REVIEW:
-            raise ValidationError({"status": ["Only datasets in review can be reviewed."]})
+            raise ValidationError(
+                {"status": ["Only datasets in review can be reviewed."]}
+            )
 
         action_name = serializer.validated_data["action"]
         old_status = dataset.status
         if action_name == "approve":
             dataset.status = DatasetStatus.APPROVED
-            reason = serializer.validated_data.get("reason") or "Dataset approved for publication."
+            reason = (
+                serializer.validated_data.get("reason")
+                or "Dataset approved for publication."
+            )
             audit_action = "dataset_review_approved"
             success_message = "Dataset approved successfully."
         else:
@@ -1522,7 +1595,9 @@ class DatasetPublishView(DatasetBaseView):
         dataset.status = DatasetStatus.PUBLISHED
         dataset.visibility = True
         dataset.published_at = dataset.published_at or timezone.now()
-        dataset.save(update_fields=["status", "visibility", "published_at", "updated_at"])
+        dataset.save(
+            update_fields=["status", "visibility", "published_at", "updated_at"]
+        )
 
         reason = serializer.validated_data.get("reason") or "Published via API."
         create_status_history(dataset, request.user, old_status, dataset.status, reason)
@@ -1621,7 +1696,9 @@ class DatasetRestoreView(DatasetBaseView):
         )
 
     def get_object(self):
-        dataset = get_object_or_404(self.get_restore_queryset(), pk=self.kwargs["dataset_id"])
+        dataset = get_object_or_404(
+            self.get_restore_queryset(), pk=self.kwargs["dataset_id"]
+        )
         self.check_object_permissions(self.request, dataset)
         return dataset
 
@@ -1701,10 +1778,6 @@ class DatasetTransferOwnerView(DatasetBaseView):
             200: success_response_schema(
                 "DatasetTransferOwnerSuccessResponse",
                 DatasetDetailSerializer,
-                description="Dataset owner transferred successfully.",
-            ),
-            **standard_error_responses(
-                "DatasetTransferOwner",
                 include_400=True,
                 include_401=True,
                 include_403=True,
@@ -1722,7 +1795,10 @@ class DatasetTransferOwnerView(DatasetBaseView):
 
         new_owner = serializer.validated_data["new_owner"]
         old_owner = dataset.publisher_user
-        reason = serializer.validated_data.get("reason") or "Dataset owner transferred via API."
+        reason = (
+            serializer.validated_data.get("reason")
+            or "Dataset owner transferred via API."
+        )
 
         with transaction.atomic():
             dataset.publisher_user = new_owner
@@ -2183,7 +2259,9 @@ class DatasetFileView(DatasetScopedViewSet):
         if inspection["checksum"]:
             dataset_file.checksum = inspection["checksum"]
         dataset_file.validation_status = (
-            FileValidationStatus.VALIDATED if is_valid else FileValidationStatus.REJECTED
+            FileValidationStatus.VALIDATED
+            if is_valid
+            else FileValidationStatus.REJECTED
         )
         dataset_file.validated_at = timezone.now()
         dataset_file.validation_notes = validation_notes
@@ -2308,7 +2386,11 @@ class DatasetFileView(DatasetScopedViewSet):
             or not dataset_file.is_safe
         ):
             raise ValidationError(
-                {"file": ["Structured API access is available only for validated safe files."]}
+                {
+                    "file": [
+                        "Structured API access is available only for validated safe files."
+                    ]
+                }
             )
 
         payload = {

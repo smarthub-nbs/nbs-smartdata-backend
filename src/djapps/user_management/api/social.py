@@ -36,7 +36,7 @@ def fetch_provider_json(
         if exc.code in {401, 403}:
             raise ValidationError({error_field: [invalid_message]})
         raise ValidationError({error_field: [failure_message]})
-    except (URLError, TimeoutError, json.JSONDecodeError):
+    except (URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError):
         raise ValidationError({error_field: [failure_message]})
 
 
@@ -48,17 +48,11 @@ def exchange_github_code_for_access_token(code, redirect_uri, code_verifier):
         raise APIException("GitHub OAuth is not configured on the server.")
 
     allowed_redirect_uris = tuple(
-        uri
-        for uri in settings.GITHUB_OAUTH_ALLOWED_REDIRECT_URIS
-        if uri
+        uri for uri in settings.GITHUB_OAUTH_ALLOWED_REDIRECT_URIS if uri
     )
     if allowed_redirect_uris and redirect_uri not in allowed_redirect_uris:
         raise ValidationError(
-            {
-                "redirect_uri": [
-                    "Redirect URI is not allowed for GitHub OAuth."
-                ]
-            }
+            {"redirect_uri": ["Redirect URI is not allowed for GitHub OAuth."]}
         )
 
     payload = urlencode(
@@ -87,10 +81,8 @@ def exchange_github_code_for_access_token(code, redirect_uri, code_verifier):
     except HTTPError as exc:
         token_payload = _read_error_payload(exc)
         _raise_github_oauth_error(token_payload)
-    except (URLError, TimeoutError, json.JSONDecodeError):
-        raise ValidationError(
-            {"code": ["Could not complete GitHub authorization."]}
-        )
+    except (URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError):
+        raise ValidationError({"code": ["Could not complete GitHub authorization."]})
 
     if not isinstance(token_payload, dict):
         raise ValidationError({"code": ["Invalid GitHub token response."]})
@@ -117,7 +109,9 @@ def _raise_github_oauth_error(token_payload):
     error_description = token_payload.get("error_description")
 
     if error_code == "bad_verification_code":
-        raise ValidationError({"code": ["Invalid or expired GitHub authorization code."]})
+        raise ValidationError(
+            {"code": ["Invalid or expired GitHub authorization code."]}
+        )
 
     if error_code == "redirect_uri_mismatch":
         raise ValidationError(

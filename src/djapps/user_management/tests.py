@@ -1,6 +1,6 @@
 import re
 import uuid
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth.models import Group
 from django.conf import settings
@@ -20,7 +20,9 @@ def assert_access_cookie_set(test_case, response):
     test_case.assertTrue(cookie.value)
     test_case.assertEqual(cookie["path"], settings.AUTH_ACCESS_COOKIE_PATH)
     test_case.assertEqual(cookie["samesite"], settings.AUTH_ACCESS_COOKIE_SAMESITE)
-    test_case.assertEqual(bool(cookie["httponly"]), settings.AUTH_ACCESS_COOKIE_HTTP_ONLY)
+    test_case.assertEqual(
+        bool(cookie["httponly"]), settings.AUTH_ACCESS_COOKIE_HTTP_ONLY
+    )
     test_case.assertEqual(bool(cookie["secure"]), settings.AUTH_ACCESS_COOKIE_SECURE)
 
 
@@ -29,7 +31,9 @@ def assert_refresh_cookie_set(test_case, response):
     test_case.assertTrue(cookie.value)
     test_case.assertEqual(cookie["path"], settings.AUTH_REFRESH_COOKIE_PATH)
     test_case.assertEqual(cookie["samesite"], settings.AUTH_REFRESH_COOKIE_SAMESITE)
-    test_case.assertEqual(bool(cookie["httponly"]), settings.AUTH_REFRESH_COOKIE_HTTP_ONLY)
+    test_case.assertEqual(
+        bool(cookie["httponly"]), settings.AUTH_REFRESH_COOKIE_HTTP_ONLY
+    )
     test_case.assertEqual(bool(cookie["secure"]), settings.AUTH_REFRESH_COOKIE_SECURE)
 
 
@@ -216,11 +220,17 @@ class APIResponseFormatTests(TestCase):
 
 class GitHubOAuthSettingsTests(TestCase):
     @patch("djapps.user_management.api.social.urlopen")
-    @patch.object(settings, "GITHUB_OAUTH_ALLOWED_REDIRECT_URIS", ("http://localhost:3000/auth/github/callback",))
+    @patch.object(
+        settings,
+        "GITHUB_OAUTH_ALLOWED_REDIRECT_URIS",
+        ("http://localhost:3000/auth/github/callback",),
+    )
     @patch.object(settings, "GITHUB_OAUTH_CLIENT_ID", "github-client-id")
     @patch.object(settings, "GITHUB_OAUTH_CLIENT_SECRET", "github-client-secret")
     def test_exchange_rejects_redirect_uri_outside_allowlist(self, _urlopen):
-        from djapps.user_management.api.social import exchange_github_code_for_access_token
+        from djapps.user_management.api.social import (
+            exchange_github_code_for_access_token,
+        )
         from rest_framework.exceptions import ValidationError
 
         with self.assertRaises(ValidationError) as context:
@@ -233,6 +243,48 @@ class GitHubOAuthSettingsTests(TestCase):
         self.assertEqual(
             context.exception.detail["redirect_uri"],
             ["Redirect URI is not allowed for GitHub OAuth."],
+        )
+
+    @patch("djapps.user_management.api.social.urlopen")
+    def test_fetch_provider_json_rejects_non_utf8_response(self, mock_urlopen):
+        from djapps.user_management.api.social import fetch_provider_json
+        from rest_framework.exceptions import ValidationError
+
+        mock_response = MagicMock()
+        mock_response.__enter__.return_value.read.return_value = b"\xff"
+        mock_urlopen.return_value = mock_response
+
+        with self.assertRaises(ValidationError) as context:
+            fetch_provider_json("https://example.com/profile", "provider-token")
+
+        self.assertEqual(
+            context.exception.detail["access_token"],
+            ["Could not verify provider token."],
+        )
+
+    @patch("djapps.user_management.api.social.urlopen")
+    @patch.object(settings, "GITHUB_OAUTH_CLIENT_ID", "github-client-id")
+    @patch.object(settings, "GITHUB_OAUTH_CLIENT_SECRET", "github-client-secret")
+    def test_exchange_rejects_non_utf8_token_response(self, _urlopen):
+        from djapps.user_management.api.social import (
+            exchange_github_code_for_access_token,
+        )
+        from rest_framework.exceptions import ValidationError
+
+        mock_response = MagicMock()
+        mock_response.__enter__.return_value.read.return_value = b"\xff"
+        _urlopen.return_value = mock_response
+
+        with self.assertRaises(ValidationError) as context:
+            exchange_github_code_for_access_token(
+                code="temp-code",
+                redirect_uri="http://localhost:3000/auth/github/callback",
+                code_verifier="uD5Stn6W2vEx8f3nF0Y6nQKq6C7eB1hW4rT9mLp2aXy",
+            )
+
+        self.assertEqual(
+            context.exception.detail["code"],
+            ["Could not complete GitHub authorization."],
         )
 
 
@@ -266,10 +318,15 @@ class CookieAuthSecurityTests(TestCase):
         csrf_token, response = fetch_csrf_token(self, self.client)
 
         self.assertTrue(csrf_token)
-        self.assertEqual(response.data["data"]["cookie_name"], settings.CSRF_COOKIE_NAME)
+        self.assertEqual(
+            response.data["data"]["cookie_name"], settings.CSRF_COOKIE_NAME
+        )
         self.assertEqual(response.data["data"]["header_name"], "X-CSRFToken")
         self.assertIn(settings.CSRF_COOKIE_NAME, response.cookies)
-        self.assertEqual(response.cookies[settings.CSRF_COOKIE_NAME]["path"], settings.CSRF_COOKIE_PATH)
+        self.assertEqual(
+            response.cookies[settings.CSRF_COOKIE_NAME]["path"],
+            settings.CSRF_COOKIE_PATH,
+        )
 
     def test_login_requires_csrf_token_for_cookie_auth_flow(self):
         response = self.client.post(
@@ -360,12 +417,16 @@ class CookieAuthSecurityTests(TestCase):
         )
 
         self.assertEqual(preflight_response.status_code, 204)
-        self.assertEqual(preflight_response.headers["Access-Control-Allow-Origin"], origin)
+        self.assertEqual(
+            preflight_response.headers["Access-Control-Allow-Origin"], origin
+        )
         self.assertEqual(
             preflight_response.headers["Access-Control-Allow-Credentials"],
             "true",
         )
-        self.assertIn("POST", preflight_response.headers["Access-Control-Allow-Methods"])
+        self.assertIn(
+            "POST", preflight_response.headers["Access-Control-Allow-Methods"]
+        )
         self.assertEqual(
             preflight_response.headers["Access-Control-Allow-Headers"],
             "content-type,x-csrftoken",
@@ -672,7 +733,9 @@ class UserManagementFeatureTests(TestCase):
             ["Refresh token cookie is missing."],
         )
 
-    def test_logout_with_cookie_auth_blacklists_refresh_cookie_and_clears_auth_cookies(self):
+    def test_logout_with_cookie_auth_blacklists_refresh_cookie_and_clears_auth_cookies(
+        self,
+    ):
         csrf_client = APIClient(enforce_csrf_checks=True)
         csrf_token, _ = fetch_csrf_token(self, csrf_client)
         login_response = csrf_client.post(
@@ -696,11 +759,19 @@ class UserManagementFeatureTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data["success"])
-        self.assertEqual(response.cookies[settings.AUTH_ACCESS_COOKIE_NAME]["path"], settings.AUTH_ACCESS_COOKIE_PATH)
-        self.assertEqual(response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]["path"], settings.AUTH_REFRESH_COOKIE_PATH)
+        self.assertEqual(
+            response.cookies[settings.AUTH_ACCESS_COOKIE_NAME]["path"],
+            settings.AUTH_ACCESS_COOKIE_PATH,
+        )
+        self.assertEqual(
+            response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]["path"],
+            settings.AUTH_REFRESH_COOKIE_PATH,
+        )
         assert_auth_cookies_cleared(self, response)
 
-    @patch.object(settings, "FRONTEND_PASSWORD_RESET_URL", "http://localhost:3000/reset-password")
+    @patch.object(
+        settings, "FRONTEND_PASSWORD_RESET_URL", "http://localhost:3000/reset-password"
+    )
     def test_password_reset_request_and_confirm_clears_auth_cookies(self):
         login_response = self.client.post(
             "/api/v1/auth/login/",
@@ -742,7 +813,9 @@ class UserManagementFeatureTests(TestCase):
         assert_refresh_token_rejected(self, old_refresh_token)
         assert_access_token_rejected(self, old_access_token)
 
-    @patch.object(settings, "FRONTEND_PASSWORD_RESET_URL", "http://localhost:3000/reset-password")
+    @patch.object(
+        settings, "FRONTEND_PASSWORD_RESET_URL", "http://localhost:3000/reset-password"
+    )
     def test_password_reset_confirm_rejects_weak_password(self):
         response = self.client.post(
             "/api/v1/auth/password/reset/request/",
@@ -821,7 +894,9 @@ class UserManagementFeatureTests(TestCase):
 
         list_response = self.client.get("/api/v1/users/?group=editor")
         self.assertEqual(list_response.status_code, 200)
-        self.assertGreaterEqual(list_response.data["data"]["pagination"]["total_items"], 1)
+        self.assertGreaterEqual(
+            list_response.data["data"]["pagination"]["total_items"], 1
+        )
 
         group_response = self.client.post(
             f"/api/v1/users/{created_user_id}/groups/",
@@ -865,6 +940,33 @@ class UserManagementFeatureTests(TestCase):
         self.assertEqual(missing, [])
         self.assertTrue(
             developer_group.permissions.filter(codename="view_apikey").exists()
+        )
+
+    def test_ensure_group_permissions_rejects_unknown_group_names(self):
+        with self.assertRaises(ValueError):
+            ensure_group_permissions("not_a_valid_role")
+
+    def test_sync_user_groups_preserves_custom_group_permissions(self):
+        permission = Permission.objects.filter(codename="view_dataset").first()
+        custom_group = Group.objects.create(name="custom_role")
+        custom_group.permissions.add(permission)
+
+        user = User.objects.create_user(
+            email="custom-role@example.com",
+            password="Password123!",
+            first_name="Custom",
+            last_name="Role",
+        )
+
+        sync_user_groups(user, [custom_group])
+
+        custom_group.refresh_from_db()
+        self.assertTrue(
+            custom_group.permissions.filter(codename="view_dataset").exists()
+        )
+        self.assertSetEqual(
+            set(user.groups.values_list("name", flat=True)),
+            {"custom_role", "user"},
         )
 
     def test_admin_can_deactivate_and_reactivate_user(self):
@@ -1017,7 +1119,9 @@ class UserManagementFeatureTests(TestCase):
         self.assertIn("dataset_audit", activity_types)
         self.assertIn("api_usage", activity_types)
         dataset_audit_entry = next(
-            item for item in payload["items"] if item["activity_type"] == "dataset_audit"
+            item
+            for item in payload["items"]
+            if item["activity_type"] == "dataset_audit"
         )
         self.assertEqual(dataset_audit_entry["dataset_slug"], "admin-activity-dataset")
         api_usage_entry = next(
@@ -1191,10 +1295,14 @@ class UserManagementFeatureTests(TestCase):
         self.assertEqual(downloads_payload["totals"]["unique_files"], 2)
         self.assertEqual(downloads_payload["totals"]["authenticated_downloads"], 1)
         self.assertEqual(downloads_payload["totals"]["anonymous_downloads"], 1)
-        self.assertEqual(downloads_payload["top_datasets"][0]["dataset_slug"], dataset.slug)
+        self.assertEqual(
+            downloads_payload["top_datasets"][0]["dataset_slug"], dataset.slug
+        )
         self.assertEqual(downloads_payload["top_datasets"][0]["count"], 2)
 
-        views_response = self.client.get("/api/v1/admin/dashboard/views/summary/?days=7")
+        views_response = self.client.get(
+            "/api/v1/admin/dashboard/views/summary/?days=7"
+        )
         self.assertEqual(views_response.status_code, 200)
         views_payload = views_response.data["data"]
         self.assertEqual(views_payload["totals"]["total_views"], 3)
