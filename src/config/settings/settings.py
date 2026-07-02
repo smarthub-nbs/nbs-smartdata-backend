@@ -251,10 +251,23 @@ AUTH_REFRESH_COOKIE_DOMAIN = (
     or AUTH_ACCESS_COOKIE_DOMAIN
 )
 
-CORS_ALLOWED_ORIGINS = tuple(
+DEFAULT_LOCAL_FRONTEND_ORIGINS = (
+    "http://localhost:4200",
+    "http://127.0.0.1:4200",
+) if DEBUG else ()
+
+CONFIGURED_CORS_ALLOWED_ORIGINS = tuple(
     item.strip()
     for item in config("CORS_ALLOWED_ORIGINS", default="").split(",")
     if item.strip()
+)
+CORS_ALLOWED_ORIGINS = tuple(
+    dict.fromkeys(
+        (
+            *DEFAULT_LOCAL_FRONTEND_ORIGINS,
+            *CONFIGURED_CORS_ALLOWED_ORIGINS,
+        )
+    )
 )
 CORS_ALLOW_CREDENTIALS = config(
     "CORS_ALLOW_CREDENTIALS",
@@ -285,10 +298,18 @@ CORS_PREFLIGHT_MAX_AGE = config(
     default=86400,
 )
 
-CSRF_TRUSTED_ORIGINS = tuple(
+CONFIGURED_CSRF_TRUSTED_ORIGINS = tuple(
     item.strip()
     for item in config("CSRF_TRUSTED_ORIGINS", default="").split(",")
     if item.strip()
+)
+CSRF_TRUSTED_ORIGINS = tuple(
+    dict.fromkeys(
+        (
+            *DEFAULT_LOCAL_FRONTEND_ORIGINS,
+            *CONFIGURED_CSRF_TRUSTED_ORIGINS,
+        )
+    )
 ) or CORS_ALLOWED_ORIGINS
 CSRF_COOKIE_NAME = config("CSRF_COOKIE_NAME", default="csrftoken")
 CSRF_COOKIE_SECURE = config(
