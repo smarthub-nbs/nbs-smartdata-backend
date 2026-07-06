@@ -1,0 +1,13 @@
+country,facility_type,count,year
+Tanzania,Hospital,218,2023
+Kenya,Hospital,337,2023
+Uganda,Hospital,188,2023
+Rwanda,Hospital,55,2023
+Burundi,Hospital,46,2023
+South Sudan,Hospital,61,2023
+Tanzania,Dispensary,6670,2023
+Kenya,Dispensary,2950,2023
+Uganda,Dispensary,2410,2023
+Rwanda,Dispensary,1520,2023
+Burundi,Dispensary,980,2023
+South Sudan,Dispensary,1100,2023

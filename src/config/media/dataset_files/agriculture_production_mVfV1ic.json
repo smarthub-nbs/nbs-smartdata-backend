@@ -1,0 +1,65 @@
+{
+  "data": [
+    {
+      "crop": "Maize",
+      "country": "Tanzania",
+      "production_tons": 7200000,
+      "year": 2023
+    },
+    {
+      "crop": "Maize",
+      "country": "Kenya",
+      "production_tons": 3800000,
+      "year": 2023
+    },
+    {
+      "crop": "Maize",
+      "country": "Uganda",
+      "production_tons": 2500000,
+      "year": 2023
+    },
+    {
+      "crop": "Rice",
+      "country": "Tanzania",
+      "production_tons": 1450000,
+      "year": 2023
+    },
+    {
+      "crop": "Rice",
+      "country": "Uganda",
+      "production_tons": 820000,
+      "year": 2023
+    },
+    {
+      "crop": "Rice",
+      "country": "Kenya",
+      "production_tons": 540000,
+      "year": 2023
+    },
+    {
+      "crop": "Coffee",
+      "country": "Rwanda",
+      "production_tons": 22000,
+      "year": 2023
+    },
+    {
+      "crop": "Coffee",
+      "country": "Uganda",
+      "production_tons": 64000,
+      "year": 2023
+    },
+    {
+      "crop": "Tea",
+      "country": "Kenya",
+      "production_tons": 560000,
+      "year": 2023
+    },
+    {
+      "crop": "Tea",
+      "country": "Rwanda",
+      "production_tons": 41000,
+      "year": 2023
+    }
+  ],
+  "source": "SmartHub sample agriculture dataset"
+}
