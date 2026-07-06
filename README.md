@@ -28,7 +28,7 @@ cd Smarthub
 cd src
 ```
 
-2. Make sure the repository root `.env` file exists and has the required settings for your local environment:
+1. Make sure the repository root `.env` file exists and has the required settings for your local environment:
 
 - `SECRET_KEY`
 - `DEBUG`
@@ -41,31 +41,31 @@ cd src
 - `CELERY_BROKER_URL`
 - `CELERY_RESULT_BACKEND`
 
-3. Start Redis:
+1. Start Redis:
 
 ```bash
 docker compose up -d redis
 ```
 
-4. Install dependencies:
+1. Install dependencies:
 
 ```bash
 uv sync
 ```
 
-5. Apply database migrations:
+1. Apply database migrations:
 
 ```bash
 uv run python manage.py migrate
 ```
 
-6. Create an admin user if you need Django admin access:
+1. Create an admin user if you need Django admin access:
 
 ```bash
 uv run python manage.py createsuperuser
 ```
 
-7. Start the development server:
+1. Start the development server:
 
 ```bash
 uv run python manage.py runserver
