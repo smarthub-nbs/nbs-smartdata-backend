@@ -3,15 +3,18 @@ import os
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.urls import reverse
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
 
+from djapps.datasets.constants import STRUCTURED_DATA_SUPPORTED_FORMATS
 from djapps.datasets.models import (
     Category,
     Dataset,
     DatasetAuditLog,
+    DatasetBookmark,
     DatasetBulkActionJob,
     DatasetBulkUploadJob,
     DatasetBulkUploadJobItem,
@@ -27,6 +30,8 @@ from djapps.datasets.models import (
     Region,
     Tag,
 )
+
+CHARTABLE_DATA_SUPPORTED_FORMATS = set(STRUCTURED_DATA_SUPPORTED_FORMATS) - {"pdf"}
 
 
 DEFAULT_ALLOWED_DATASET_FILE_EXTENSIONS = {
@@ -455,6 +460,23 @@ class DatasetDetailSerializer(DatasetSerializer):
         return TagSerializer([item.tag for item in obj.dataset_tags.select_related("tag").all()], many=True).data
 
 
+class DatasetBookmarkSerializer(ModelSerializer):
+    dataset = DatasetDetailSerializer(read_only=True)
+
+    class Meta:
+        model = DatasetBookmark
+        fields = (
+            "id",
+            "dataset",
+            "created_at",
+        )
+
+
+class DatasetBookmarkListPayloadSerializer(serializers.Serializer):
+    items = DatasetBookmarkSerializer(many=True, read_only=True)
+    pagination = DatasetPaginationMetaSerializer(read_only=True)
+
+
 class DatasetWriteSerializer(ModelSerializer):
     publisher_user_id = serializers.UUIDField(read_only=True)
     category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
@@ -581,6 +603,8 @@ class DatasetFileSerializer(ModelSerializer):
         required=False,
         allow_null=True,
     )
+    chart_url = serializers.SerializerMethodField()
+    chart_available = serializers.SerializerMethodField()
 
     class Meta:
         model = DatasetFile
@@ -600,6 +624,8 @@ class DatasetFileSerializer(ModelSerializer):
             "validated_at",
             "validation_notes",
             "is_safe",
+            "chart_url",
+            "chart_available",
         )
         read_only_fields = (
             "id",
@@ -612,6 +638,8 @@ class DatasetFileSerializer(ModelSerializer):
             "validated_at",
             "validation_notes",
             "is_safe",
+            "chart_url",
+            "chart_available",
         )
 
     def validate(self, attrs):
@@ -706,6 +734,25 @@ class DatasetFileSerializer(ModelSerializer):
         self._populate_file_metadata(validated_data)
         return super().update(instance, validated_data)
 
+    def _has_chart_access(self, obj):
+        return (
+            obj.validation_status == FileValidationStatus.VALIDATED
+            and obj.is_safe
+            and (obj.file_format or "").lower() in CHARTABLE_DATA_SUPPORTED_FORMATS
+        )
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_chart_url(self, obj):
+        if not self._has_chart_access(obj):
+            return None
+        chart_url = reverse("dataset-file-chart", kwargs={"pk": obj.pk})
+        request = self.context.get("request")
+        return request.build_absolute_uri(chart_url) if request is not None else chart_url
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_chart_available(self, obj):
+        return self._has_chart_access(obj)
+
 
 class DatasetFileDataQuerySerializer(serializers.Serializer):
     limit = serializers.IntegerField(required=False, min_value=1, max_value=200, default=50)
@@ -741,6 +788,83 @@ class DatasetFileDataResponseSerializer(serializers.Serializer):
     returned_rows = serializers.IntegerField(read_only=True)
     total_rows = serializers.IntegerField(read_only=True)
     has_more = serializers.BooleanField(read_only=True)
+    warnings = serializers.ListField(child=serializers.CharField(), read_only=True, required=False)
+
+
+class DatasetFileChartQuerySerializer(serializers.Serializer):
+    chart_type = serializers.ChoiceField(
+        choices=("bar", "pie", "line", "scatter"),
+        required=False,
+        default="bar",
+    )
+    x_field = serializers.CharField(required=False, allow_blank=False)
+    y_field = serializers.CharField(required=False, allow_blank=False)
+    group_by = serializers.CharField(required=False, allow_blank=False)
+    metric = serializers.ChoiceField(
+        choices=("count", "sum", "avg", "min", "max"),
+        required=False,
+        default="count",
+    )
+    sort = serializers.ChoiceField(
+        choices=("asc", "desc"),
+        required=False,
+    )
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=100, default=20)
+
+    def validate(self, attrs):
+        chart_type = attrs.get("chart_type", "bar")
+        x_field = attrs.get("x_field")
+        y_field = attrs.get("y_field")
+        group_by = attrs.get("group_by")
+        metric = attrs.get("metric", "count")
+
+        if chart_type == "scatter":
+            if not x_field or not y_field:
+                raise serializers.ValidationError(
+                    {"detail": ["Scatter charts require both x_field and y_field."]}
+                )
+            return attrs
+
+        if not (group_by or x_field):
+            raise serializers.ValidationError(
+                {"x_field": ["This field is required for bar, pie, and line charts."]}
+            )
+
+        if metric != "count" and not y_field:
+            raise serializers.ValidationError(
+                {"y_field": ["This field is required when using sum, avg, min, or max metrics."]}
+            )
+        return attrs
+
+
+class DatasetChartPointSerializer(serializers.Serializer):
+    label = serializers.CharField(read_only=True, allow_null=True, required=False)
+    x = serializers.JSONField(read_only=True, allow_null=True, required=False)
+    y = serializers.JSONField(read_only=True, allow_null=True, required=False)
+    value = serializers.JSONField(read_only=True, allow_null=True, required=False)
+    count = serializers.IntegerField(read_only=True)
+
+
+class DatasetChartSeriesSerializer(serializers.Serializer):
+    name = serializers.CharField(read_only=True)
+    field = serializers.CharField(read_only=True, allow_null=True, required=False)
+    points = DatasetChartPointSerializer(many=True, read_only=True)
+
+
+class DatasetFileChartResponseSerializer(serializers.Serializer):
+    file_id = serializers.UUIDField(read_only=True)
+    filename = serializers.CharField(read_only=True)
+    file_format = serializers.CharField(read_only=True)
+    structure_type = serializers.CharField(read_only=True)
+    chart_type = serializers.CharField(read_only=True)
+    x_field = serializers.CharField(read_only=True, allow_null=True, required=False)
+    y_field = serializers.CharField(read_only=True, allow_null=True, required=False)
+    group_by = serializers.CharField(read_only=True, allow_null=True, required=False)
+    metric = serializers.CharField(read_only=True)
+    columns = serializers.ListField(child=serializers.CharField(), read_only=True)
+    point_count = serializers.IntegerField(read_only=True)
+    source_row_count = serializers.IntegerField(read_only=True)
+    series = DatasetChartSeriesSerializer(many=True, read_only=True)
     warnings = serializers.ListField(child=serializers.CharField(), read_only=True, required=False)
 
 

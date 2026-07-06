@@ -36,6 +36,7 @@ from djapps.datasets.models import (
     Category,
     Dataset,
     DatasetAuditLog,
+    DatasetBookmark,
     DatasetBulkActionJob,
     DatasetBulkActionJobStatus,
     DatasetBulkUploadJob,
@@ -58,6 +59,7 @@ from djapps.datasets.helpers import (
     request_audit_details,
     validate_dataset_ready_for_review,
 )
+from djapps.datasets.charting import build_dataset_chart_payload
 from djapps.datasets.permissions import (
     CanAccessDataset,
     CanAccessDatasetRelatedObject,
@@ -67,6 +69,7 @@ from djapps.datasets.permissions import (
     CanReviewDataset,
     CanViewDatasetAuditLog,
     can_change_dataset,
+    can_view_dataset,
     get_dataset_from_object,
     has_dataset_admin_access,
 )
@@ -83,9 +86,13 @@ from djapps.datasets.serializers import (
     DatasetBulkUploadJobDetailSerializer,
     DatasetBulkUploadJobListPayloadSerializer,
     DatasetAuditLogSerializer,
+    DatasetBookmarkSerializer,
+    DatasetBookmarkListPayloadSerializer,
     DatasetDetailSerializer,
     DatasetFileSerializer,
     DatasetFileDataQuerySerializer,
+    DatasetFileChartQuerySerializer,
+    DatasetFileChartResponseSerializer,
     DatasetFileDataResponseSerializer,
     DatasetFileValidateSerializer,
     DatasetMetadataSerializer,
@@ -1424,6 +1431,157 @@ class DatasetDetailView(DatasetBaseView):
         return success_response(message="Dataset deleted successfully.")
 
 
+class DatasetBookmarkBaseView(StandardizedAPIView):
+    permission_classes = [IsAuthenticated]
+    pagination_class = CustomPagination
+
+    def get_queryset(self):
+        return (
+            DatasetBookmark.objects.select_related(
+                "user",
+                "dataset",
+                "dataset__publisher_user",
+                "dataset__category",
+            )
+            .prefetch_related(
+                "dataset__metadata",
+                "dataset__dataset_tags__tag",
+                "dataset__versions__files",
+            )
+            .filter(user=self.request.user)
+            .order_by("-created_at", "-id")
+        )
+
+    def paginate_queryset(self, queryset):
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, self.request, view=self)
+        return paginator, page
+
+
+class DatasetBookmarkListView(DatasetBookmarkBaseView):
+    serializer_class = DatasetBookmarkSerializer
+
+    @extend_schema(
+        tags=["Datasets"],
+        operation_id="dataset_bookmark_list",
+        summary="List saved datasets",
+        description="Return the datasets saved by the authenticated user.",
+        responses={
+            200: success_response_schema(
+                "DatasetBookmarkListSuccessResponse",
+                DatasetBookmarkListPayloadSerializer,
+                description="Saved datasets returned successfully.",
+            ),
+            **standard_error_responses(
+                "DatasetBookmarkList",
+                include_401=True,
+            ),
+        },
+    )
+    def get(self, request):
+        paginator, page = self.paginate_queryset(self.get_queryset())
+        serializer = self.serializer_class(page, many=True, context={"request": request})
+        return paginator.get_paginated_response(serializer.data)
+
+
+class DatasetBookmarkView(DatasetBaseView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = DatasetBookmarkSerializer
+
+    def get_base_queryset(self):
+        return Dataset.objects.select_related(
+            "publisher_user",
+            "category",
+        ).prefetch_related(
+            "metadata",
+            "dataset_tags__tag",
+            "versions__files",
+        ).filter(
+            deleted_at__isnull=True,
+        )
+
+    def get_bookmark(self, dataset):
+        return DatasetBookmark.objects.select_related(
+            "dataset",
+            "dataset__publisher_user",
+            "dataset__category",
+        ).prefetch_related(
+            "dataset__metadata",
+            "dataset__dataset_tags__tag",
+            "dataset__versions__files",
+        ).filter(user=self.request.user, dataset=dataset).first()
+
+    @extend_schema(
+        tags=["Datasets"],
+        operation_id="dataset_bookmark_save",
+        summary="Save dataset",
+        description="Save a dataset for the authenticated user.",
+        parameters=[DATASET_ID_PARAMETER],
+        responses={
+            200: success_response_schema(
+                "DatasetBookmarkSaveSuccessResponse",
+                DatasetBookmarkSerializer,
+                description="Dataset saved successfully.",
+            ),
+            201: success_response_schema(
+                "DatasetBookmarkSaveCreatedResponse",
+                DatasetBookmarkSerializer,
+                description="Dataset saved successfully.",
+            ),
+            **standard_error_responses(
+                "DatasetBookmarkSave",
+                include_401=True,
+                include_403=True,
+                include_404=True,
+            ),
+        },
+    )
+    def post(self, request, dataset_id):
+        dataset = get_object_or_404(self.get_base_queryset(), pk=dataset_id)
+        if not can_view_dataset(request.user, dataset):
+            raise PermissionDenied("You cannot save this dataset.")
+
+        bookmark, created = DatasetBookmark.objects.get_or_create(
+            user=request.user,
+            dataset=dataset,
+        )
+        bookmark = self.get_bookmark(bookmark.dataset) or bookmark
+        serializer = self.serializer_class(bookmark, context={"request": request})
+        return success_response(
+            data=serializer.data,
+            message="Dataset saved successfully.",
+            status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    @extend_schema(
+        tags=["Datasets"],
+        operation_id="dataset_bookmark_remove",
+        summary="Remove saved dataset",
+        description="Remove a dataset from the authenticated user's saved list.",
+        parameters=[DATASET_ID_PARAMETER],
+        responses={
+            200: success_response_schema(
+                "DatasetBookmarkRemoveSuccessResponse",
+                description="Dataset removed from saved list successfully.",
+            ),
+            **standard_error_responses(
+                "DatasetBookmarkRemove",
+                include_401=True,
+                include_403=True,
+                include_404=True,
+            ),
+        },
+    )
+    def delete(self, request, dataset_id):
+        dataset = get_object_or_404(self.get_base_queryset(), pk=dataset_id)
+        bookmark = self.get_bookmark(dataset)
+        if bookmark is None:
+            return success_response(message="Dataset removed from saved list successfully.")
+
+        bookmark.delete()
+        return success_response(message="Dataset removed from saved list successfully.")
+
+
 class DatasetSubmitReviewView(DatasetBaseView):
     permission_classes = [IsAuthenticated]
 
@@ -2428,6 +2586,133 @@ class DatasetFileView(DatasetScopedViewSet):
         return success_response(
             data=payload,
             message="Structured dataset content retrieved successfully.",
+        )
+
+    @extend_schema(
+        tags=["Dataset Files"],
+        operation_id="dataset_file_chart",
+        summary="Build chart-ready dataset content",
+        description=(
+            "Return chart-ready data for structured dataset files. "
+            "Supported formats are csv, tsv, json, xls, xlsx, and sdmx/xml. "
+            "PDF documents are not supported for chart generation. "
+            "Public access is allowed for published datasets; authenticated owners and dataset admins can also access private datasets."
+        ),
+        auth=[],
+        parameters=[
+            OpenApiParameter(
+                name="chart_type",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                enum=["bar", "pie", "line", "scatter"],
+                default="bar",
+                description="Chart type to generate.",
+            ),
+            OpenApiParameter(
+                name="x_field",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Field to use on the x axis or for grouping.",
+            ),
+            OpenApiParameter(
+                name="y_field",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Field to use for numeric aggregation or scatter y values.",
+            ),
+            OpenApiParameter(
+                name="group_by",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Optional grouping field for bar, pie, and line charts.",
+            ),
+            OpenApiParameter(
+                name="metric",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                enum=["count", "sum", "avg", "min", "max"],
+                default="count",
+                description="Aggregation metric for grouped charts.",
+            ),
+            OpenApiParameter(
+                name="sort",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                enum=["asc", "desc"],
+                description="Sort order for chart points.",
+            ),
+            OpenApiParameter(
+                name="limit",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                description="Maximum number of chart points to return.",
+                default=20,
+            ),
+        ],
+        responses={
+            200: success_response_schema(
+                "DatasetFileChartSuccessResponse",
+                DatasetFileChartResponseSerializer,
+                description="Chart-ready dataset content returned successfully.",
+            ),
+            **standard_error_responses(
+                "DatasetFileChart",
+                include_400=True,
+                include_404=True,
+            ),
+        },
+    )
+    @action(detail=True, methods=["get"], url_path="chart")
+    def chart(self, request, pk=None):
+        dataset_file = self.get_object()
+        params = DatasetFileChartQuerySerializer(data=request.query_params)
+        params.is_valid(raise_exception=True)
+
+        if (
+            dataset_file.validation_status != FileValidationStatus.VALIDATED
+            or not dataset_file.is_safe
+        ):
+            raise ValidationError(
+                {"file": ["Chart API access is available only for validated safe files."]}
+            )
+
+        structured_payload = build_structured_payload(dataset_file, offset=0, limit=None)
+        payload = {
+            "file_id": dataset_file.id,
+            "filename": dataset_file.filename,
+            "file_format": dataset_file.file_format,
+            **build_dataset_chart_payload(
+                dataset_file,
+                structured_payload,
+                chart_type=params.validated_data["chart_type"],
+                x_field=params.validated_data.get("x_field"),
+                y_field=params.validated_data.get("y_field"),
+                group_by=params.validated_data.get("group_by"),
+                metric=params.validated_data["metric"],
+                sort=params.validated_data.get("sort"),
+                limit=params.validated_data["limit"],
+            ),
+        }
+
+        log_dataset_event(
+            dataset_file.dataset_version.dataset,
+            "file_chart_accessed",
+            actor=request.user if request.user.is_authenticated else None,
+            target=dataset_file,
+            details=request_audit_details(
+                request,
+                filename=dataset_file.filename,
+                chart_type=payload["chart_type"],
+                x_field=payload.get("x_field"),
+                y_field=payload.get("y_field"),
+                group_by=payload.get("group_by"),
+                metric=payload.get("metric"),
+                point_count=payload["point_count"],
+            ),
+        )
+        return success_response(
+            data=payload,
+            message="Chart-ready dataset content retrieved successfully.",
         )
 
 

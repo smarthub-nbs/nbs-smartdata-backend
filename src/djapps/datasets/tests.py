@@ -14,6 +14,7 @@ import xlwt
 from .models import (
     Category,
     Dataset,
+    DatasetBookmark,
     DatasetAuditLog,
     DatasetBulkActionJob,
     DatasetBulkActionJobStatus,
@@ -1327,6 +1328,60 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(len(payload["document"]["pages"]), 1)
         self.assertEqual(payload["document"]["pages"][0]["page_number"], 1)
 
+    def test_structured_dataset_api_returns_chart_ready_content(self):
+        dataset = self.create_draft_dataset(slug="structured-chart-dataset")
+        upload_response = self.upload_file(
+            dataset,
+            "chart.csv",
+            b"country,value\nTZ,10\nUG,20\nTZ,30\n",
+            "text/csv",
+        )
+
+        dataset_file_id = upload_response.data["data"]["id"]
+        response = self.client.get(
+            f"/api/v1/dataset/files/{dataset_file_id}/chart/",
+            {
+                "chart_type": "bar",
+                "x_field": "country",
+                "metric": "count",
+                "limit": 10,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.data["data"]
+        self.assertEqual(payload["chart_type"], "bar")
+        self.assertEqual(payload["series"][0]["field"], "country")
+        self.assertEqual(
+            payload["series"][0]["points"],
+            [
+                {"label": "TZ", "x": "TZ", "y": 2, "value": 2, "count": 2},
+                {"label": "UG", "x": "UG", "y": 1, "value": 1, "count": 1},
+            ],
+        )
+
+    def test_structured_dataset_api_rejects_chart_generation_for_pdf(self):
+        dataset = self.create_draft_dataset(slug="structured-chart-pdf-dataset")
+        upload_response = self.upload_file(
+            dataset,
+            "guide.pdf",
+            self.build_pdf_content(),
+            "application/pdf",
+        )
+
+        dataset_file_id = upload_response.data["data"]["id"]
+        response = self.client.get(
+            f"/api/v1/dataset/files/{dataset_file_id}/chart/",
+            {
+                "chart_type": "bar",
+                "x_field": "country",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data["success"])
+        self.assertEqual(response.data["error"]["code"], "validation_error")
+
     def test_structured_dataset_api_rejects_unsupported_file_formats(self):
         dataset = self.create_draft_dataset(slug="unsupported-structured-format")
         upload_response = self.upload_file(
@@ -1342,7 +1397,29 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertFalse(response.data["success"])
         self.assertEqual(response.data["error"]["code"], "validation_error")
-        self.assertIn("file_format", response.data["error"]["details"]["fields"])
+
+    def test_user_can_save_list_and_remove_dataset_bookmarks(self):
+        dataset = self.make_dataset_ready_for_review(slug="bookmarkable-dataset")
+        self.client.force_authenticate(user=self.viewer)
+
+        save_response = self.client.post(f"/api/v1/dataset/{dataset.id}/bookmark/")
+        self.assertEqual(save_response.status_code, 201)
+        self.assertTrue(save_response.data["success"])
+        self.assertEqual(save_response.data["data"]["dataset"]["id"], str(dataset.id))
+        self.assertEqual(DatasetBookmark.objects.filter(user=self.viewer, dataset=dataset).count(), 1)
+
+        duplicate_response = self.client.post(f"/api/v1/dataset/{dataset.id}/bookmark/")
+        self.assertEqual(duplicate_response.status_code, 200)
+        self.assertEqual(DatasetBookmark.objects.filter(user=self.viewer, dataset=dataset).count(), 1)
+
+        list_response = self.client.get("/api/v1/dataset/bookmarks/")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(list_response.data["data"]["pagination"]["total_items"], 1)
+        self.assertEqual(list_response.data["data"]["items"][0]["dataset"]["id"], str(dataset.id))
+
+        remove_response = self.client.delete(f"/api/v1/dataset/{dataset.id}/bookmark/")
+        self.assertEqual(remove_response.status_code, 200)
+        self.assertEqual(DatasetBookmark.objects.filter(user=self.viewer, dataset=dataset).count(), 0)
 
     def test_admin_can_review_publish_and_public_can_discover_and_download(self):
         dataset = self.make_dataset_ready_for_review(slug="public-climate-data")

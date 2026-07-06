@@ -246,6 +246,34 @@ class DatasetTag(BaseModel):
         return f"{self.dataset.slug} - {self.tag.name}"
 
 
+class DatasetBookmark(BaseModel):
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="dataset_bookmarks",
+    )
+    dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.CASCADE,
+        related_name="bookmarks",
+    )
+
+    class Meta:
+        db_table = "dataset_bookmarks"
+        verbose_name = "Dataset Bookmark"
+        verbose_name_plural = "Dataset Bookmarks"
+        constraints = [
+            models.UniqueConstraint(
+                fields=("user", "dataset"),
+                name="unique_dataset_bookmark",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.user.email} -> {self.dataset.slug}"
+
+
 class DatasetStatusHistory(BaseModel):
 
     dataset = models.ForeignKey(

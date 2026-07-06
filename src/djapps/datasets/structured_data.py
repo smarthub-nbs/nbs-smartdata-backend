@@ -292,10 +292,10 @@ def build_json_rows(payload):
 
 def paginate_items(items, offset, limit):
     total_items = len(items)
-    sliced_items = items[offset: offset + limit]
+    sliced_items = items[offset:] if limit is None else items[offset: offset + limit]
     return {
         "offset": offset,
-        "limit": limit,
+        "limit": total_items - offset if limit is None else limit,
         "returned_items": len(sliced_items),
         "total_items": total_items,
         "returned_rows": len(sliced_items),
@@ -313,7 +313,7 @@ def build_tabular_payload(dataset_file, raw_rows, offset, limit, *, structure_ty
     return {
         "structure_type": structure_type,
         "columns": columns,
-        "rows": rows[offset: offset + limit],
+        "rows": rows[offset:] if limit is None else rows[offset: offset + limit],
         "data": data,
         "warnings": [],
         **page,
@@ -476,7 +476,7 @@ def build_sdmx_payload(dataset_file, parsed_payload, offset, limit):
     return {
         "structure_type": "sdmx",
         "columns": parsed_payload["columns"],
-        "rows": observations[offset: offset + limit],
+        "rows": observations[offset:] if limit is None else observations[offset: offset + limit],
         "sdmx": {
             "format": parsed_payload["format"],
             "dimensions": parsed_payload["dimensions"],
@@ -494,7 +494,7 @@ def build_pdf_payload(dataset_file, offset, limit):
     try:
         reader = PdfReader(dataset_file.file)
         total_pages = len(reader.pages)
-        end_index = min(total_pages, offset + limit)
+        end_index = total_pages if limit is None else min(total_pages, offset + limit)
         pages = []
         warnings = []
         for page_index in range(offset, end_index):
