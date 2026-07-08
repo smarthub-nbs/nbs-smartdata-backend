@@ -1,0 +1,101 @@
+{
+  "header": {
+    "id": "TRADE_SDMX_SAMPLE",
+    "prepared": "2026-07-02"
+  },
+  "structure": {
+    "dimensions": {
+      "series": [
+        {
+          "id": "country",
+          "values": [
+            {
+              "id": "Tanzania"
+            },
+            {
+              "id": "Kenya"
+            },
+            {
+              "id": "Uganda"
+            }
+          ]
+        }
+      ],
+      "observation": [
+        {
+          "id": "year",
+          "values": [
+            {
+              "id": "2021"
+            },
+            {
+              "id": "2022"
+            },
+            {
+              "id": "2023"
+            }
+          ]
+        }
+      ]
+    },
+    "attributes": {
+      "observation": [
+        {
+          "id": "unit"
+        }
+      ]
+    },
+    "measures": {
+      "observation": [
+        {
+          "id": "value"
+        }
+      ]
+    }
+  },
+  "dataSets": [
+    {
+      "series": {
+        "0": {
+          "observations": {
+            "0": [
+              1180
+            ],
+            "1": [
+              1265
+            ],
+            "2": [
+              1340
+            ]
+          }
+        },
+        "1": {
+          "observations": {
+            "0": [
+              880
+            ],
+            "1": [
+              910
+            ],
+            "2": [
+              980
+            ]
+          }
+        },
+        "2": {
+          "observations": {
+            "0": [
+              520
+            ],
+            "1": [
+              560
+            ],
+            "2": [
+              590
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

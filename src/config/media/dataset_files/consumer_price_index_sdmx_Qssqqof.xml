@@ -1,0 +1,2 @@
+<?xml version='1.0' encoding='utf-8'?>
+<message:Structure xmlns:message="http://www.sdmx.org/resources/sdmxml/schemas/v2_1/message"><Series><SeriesKey><Value id="country" value="Kenya" /><Value id="unit" value="index" /></SeriesKey><Obs><ObsDimension id="year" value="2020" /><ObsValue value="98.7" /></Obs><Obs><ObsDimension id="year" value="2021" /><ObsValue value="101.2" /></Obs><Obs><ObsDimension id="year" value="2022" /><ObsValue value="104.0" /></Obs><Obs><ObsDimension id="year" value="2023" /><ObsValue value="106.4" /></Obs></Series></message:Structure>

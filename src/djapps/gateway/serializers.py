@@ -17,8 +17,6 @@ STRUCTURED_DATA_SUPPORTED_FORMATS = {
     "xml",
     "sdmx",
 }
-
-
 class OpenDatasetFileSerializer(serializers.ModelSerializer):
     download_url = serializers.SerializerMethodField()
     data_url = serializers.SerializerMethodField()

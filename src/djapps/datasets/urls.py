@@ -23,6 +23,8 @@ from djapps.datasets.views import (
     DatasetStatusHistoryView,
     DatasetTagView,
     DatasetAuditLogView,
+    DatasetBookmarkListView,
+    DatasetBookmarkView,
     DatasetVersionView,
     DatasetView,
     IndexingStatusView,
@@ -111,6 +113,16 @@ urlpatterns = [
         "<uuid:dataset_id>/transfer-owner/",
         DatasetTransferOwnerView.as_view(),
         name="dataset-transfer-owner",
+    ),
+    path(
+        "bookmarks/",
+        DatasetBookmarkListView.as_view(),
+        name="dataset-bookmark-list",
+    ),
+    path(
+        "<uuid:dataset_id>/bookmark/",
+        DatasetBookmarkView.as_view(),
+        name="dataset-bookmark",
     ),
 ]
 
