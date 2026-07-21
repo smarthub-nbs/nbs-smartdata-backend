@@ -528,6 +528,43 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(in_review_dataset.status, DatasetStatus.IN_REVIEW)
         self.assertFalse(in_review_dataset.visibility)
 
+    def test_admin_bulk_action_is_idempotent_for_same_request(self):
+        review_ready_one = self.make_dataset_ready_for_review(
+            slug="bulk-idempotent-one"
+        )
+        review_ready_two = self.make_dataset_ready_for_review(
+            slug="bulk-idempotent-two"
+        )
+
+        self.assertEqual(self.submit_for_review(review_ready_one).status_code, 200)
+        self.assertEqual(self.submit_for_review(review_ready_two).status_code, 200)
+
+        self.client.force_authenticate(user=self.admin)
+        payload = {
+            "action": "approve",
+            "dataset_ids": [str(review_ready_one.id), str(review_ready_two.id)],
+            "reason": "Bulk approval.",
+        }
+
+        first_response = self.client.post(
+            "/api/v1/dataset/admin-queue/bulk-action/",
+            payload,
+            format="json",
+        )
+        self.assertEqual(first_response.status_code, 202)
+        first_job_id = first_response.data["data"]["id"]
+        job_count = DatasetBulkActionJob.objects.count()
+
+        second_response = self.client.post(
+            "/api/v1/dataset/admin-queue/bulk-action/",
+            payload,
+            format="json",
+        )
+        self.assertEqual(second_response.status_code, 200)
+        self.assertTrue(second_response.data["success"])
+        self.assertEqual(second_response.data["data"]["id"], first_job_id)
+        self.assertEqual(DatasetBulkActionJob.objects.count(), job_count)
+
     def test_admin_bulk_action_job_list_and_detail_are_available(self):
         review_ready_dataset = self.make_dataset_ready_for_review(
             slug="bulk-job-detail-dataset"
@@ -651,6 +688,61 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(detail_payload["id"], job_id)
         self.assertEqual(detail_payload["total_count"], 2)
         self.assertEqual(len(detail_payload["items"]), 2)
+
+    def test_admin_bulk_upload_is_idempotent_for_same_request(self):
+        dataset_one = self.create_draft_dataset(slug="bulk-upload-idem-a")
+        dataset_two = self.create_draft_dataset(slug="bulk-upload-idem-b")
+
+        self.client.force_authenticate(user=self.admin)
+        def build_payload():
+            return {
+                "items": json.dumps(
+                    [
+                        {"dataset_id": str(dataset_one.id), "is_primary": True},
+                        {"dataset_id": str(dataset_two.id), "is_primary": True},
+                    ]
+                ),
+                "files": [
+                    SimpleUploadedFile(
+                        "bulk-upload-idem-a.csv",
+                        b"country,value\nTZ,10\n",
+                        content_type="text/csv",
+                    ),
+                    SimpleUploadedFile(
+                        "bulk-upload-idem-b.csv",
+                        b"country,value\nKE,20\n",
+                        content_type="text/csv",
+                    ),
+                ],
+            }
+
+        first_response = self.client.post(
+            "/api/v1/dataset/admin-queue/bulk-upload/",
+            build_payload(),
+            format="multipart",
+        )
+        self.assertEqual(first_response.status_code, 202)
+        first_job_id = first_response.data["data"]["id"]
+        job_count = DatasetBulkUploadJob.objects.count()
+        file_count = DatasetFile.objects.filter(
+            dataset_version__dataset__in=[dataset_one, dataset_two]
+        ).count()
+
+        second_response = self.client.post(
+            "/api/v1/dataset/admin-queue/bulk-upload/",
+            build_payload(),
+            format="multipart",
+        )
+        self.assertEqual(second_response.status_code, 200)
+        self.assertTrue(second_response.data["success"])
+        self.assertEqual(second_response.data["data"]["id"], first_job_id)
+        self.assertEqual(DatasetBulkUploadJob.objects.count(), job_count)
+        self.assertEqual(
+            DatasetFile.objects.filter(
+                dataset_version__dataset__in=[dataset_one, dataset_two]
+            ).count(),
+            file_count,
+        )
 
     def test_admin_bulk_upload_job_endpoints_require_dataset_admin_permissions(self):
         response = self.client.get("/api/v1/dataset/admin-queue/bulk-upload/jobs/")
@@ -936,6 +1028,31 @@ class DatasetWorkflowTests(TestCase):
         )
         self.assertIn("file_validated", actions)
 
+        audit_count = DatasetAuditLog.objects.filter(
+            dataset=dataset,
+            target_id=dataset_file.id,
+            action="file_validated",
+        ).count()
+
+        second_response = self.validate_dataset_file(
+            dataset_file_id,
+            validation_notes="Admin revalidated file.",
+        )
+        self.assertEqual(second_response.status_code, 200)
+        self.assertTrue(second_response.data["success"])
+        self.assertEqual(
+            second_response.data["message"],
+            "Dataset file validation already recorded.",
+        )
+        self.assertEqual(
+            DatasetAuditLog.objects.filter(
+                dataset=dataset,
+                target_id=dataset_file.id,
+                action="file_validated",
+            ).count(),
+            audit_count,
+        )
+
     def test_admin_validation_rejects_unsupported_file(self):
         dataset = self.create_draft_dataset(slug="admin-file-reject")
         version = DatasetVersion.objects.create(
@@ -1035,6 +1152,49 @@ class DatasetWorkflowTests(TestCase):
         )
         self.assertEqual(publish_response.status_code, 403)
 
+    def test_publish_endpoint_is_idempotent_for_already_published_dataset(self):
+        dataset = self.make_dataset_ready_for_review(slug="idempotent-publish-dataset")
+
+        self.assertEqual(self.submit_for_review(dataset).status_code, 200)
+        self.assertEqual(self.approve_dataset(dataset).status_code, 200)
+
+        first_publish_response = self.publish_dataset(dataset)
+        self.assertEqual(first_publish_response.status_code, 200)
+        self.assertTrue(first_publish_response.data["success"])
+        first_published_at = first_publish_response.data["data"]["published_at"]
+
+        audit_count = DatasetAuditLog.objects.filter(
+            dataset=dataset,
+            action="dataset_published",
+        ).count()
+        history_count = dataset.status_history.filter(
+            new_status=DatasetStatus.PUBLISHED
+        ).count()
+
+        second_publish_response = self.publish_dataset(dataset)
+        self.assertEqual(second_publish_response.status_code, 200)
+        self.assertTrue(second_publish_response.data["success"])
+        self.assertEqual(
+            second_publish_response.data["message"],
+            "Dataset is already published.",
+        )
+        self.assertEqual(
+            second_publish_response.data["data"]["published_at"],
+            first_published_at,
+        )
+
+        self.assertEqual(
+            DatasetAuditLog.objects.filter(
+                dataset=dataset,
+                action="dataset_published",
+            ).count(),
+            audit_count,
+        )
+        self.assertEqual(
+            dataset.status_history.filter(new_status=DatasetStatus.PUBLISHED).count(),
+            history_count,
+        )
+
     def test_admin_can_unpublish_dataset_and_remove_public_access(self):
         dataset = self.make_dataset_ready_for_review(slug="unpublished-climate-data")
         self.assertEqual(self.submit_for_review(dataset).status_code, 200)
@@ -1071,6 +1231,57 @@ class DatasetWorkflowTests(TestCase):
         )
         self.assertIn("dataset_published", actions)
         self.assertIn("dataset_unpublished", actions)
+
+    def test_unpublish_endpoint_is_idempotent_for_already_unpublished_dataset(self):
+        dataset = self.make_dataset_ready_for_review(
+            slug="idempotent-unpublish-dataset"
+        )
+
+        self.assertEqual(self.submit_for_review(dataset).status_code, 200)
+        self.assertEqual(self.approve_dataset(dataset).status_code, 200)
+        self.assertEqual(self.publish_dataset(dataset).status_code, 200)
+
+        first_unpublish_response = self.unpublish_dataset(dataset)
+        self.assertEqual(first_unpublish_response.status_code, 200)
+        self.assertTrue(first_unpublish_response.data["success"])
+        self.assertEqual(
+            first_unpublish_response.data["data"]["status"],
+            DatasetStatus.APPROVED,
+        )
+        self.assertFalse(first_unpublish_response.data["data"]["visibility"])
+
+        audit_count = DatasetAuditLog.objects.filter(
+            dataset=dataset,
+            action="dataset_unpublished",
+        ).count()
+        history_count = dataset.status_history.filter(
+            new_status=DatasetStatus.APPROVED
+        ).count()
+
+        second_unpublish_response = self.unpublish_dataset(dataset)
+        self.assertEqual(second_unpublish_response.status_code, 200)
+        self.assertTrue(second_unpublish_response.data["success"])
+        self.assertEqual(
+            second_unpublish_response.data["message"],
+            "Dataset is already unpublished.",
+        )
+        self.assertEqual(
+            second_unpublish_response.data["data"]["status"],
+            DatasetStatus.APPROVED,
+        )
+        self.assertFalse(second_unpublish_response.data["data"]["visibility"])
+
+        self.assertEqual(
+            DatasetAuditLog.objects.filter(
+                dataset=dataset,
+                action="dataset_unpublished",
+            ).count(),
+            audit_count,
+        )
+        self.assertEqual(
+            dataset.status_history.filter(new_status=DatasetStatus.APPROVED).count(),
+            history_count,
+        )
 
     def test_only_published_datasets_can_be_unpublished(self):
         dataset = self.make_dataset_ready_for_review(slug="cannot-unpublish-approved")
@@ -1118,14 +1329,66 @@ class DatasetWorkflowTests(TestCase):
         self.assertIn("dataset_deleted", actions)
         self.assertIn("dataset_restored", actions)
 
-    def test_only_deleted_datasets_can_be_restored(self):
+    def test_restore_endpoint_returns_success_for_already_restored_dataset(self):
         dataset = self.create_draft_dataset(slug="active-restore-target")
 
         response = self.restore_dataset(dataset)
 
-        self.assertEqual(response.status_code, 400)
-        self.assertFalse(response.data["success"])
-        self.assertIn("dataset", response.data["error"]["details"]["fields"])
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(response.data["message"], "Dataset is already restored.")
+        self.assertEqual(response.data["data"]["id"], str(dataset.id))
+        self.assertFalse(response.data["data"]["deleted_at"])
+
+    def test_restore_endpoint_is_idempotent_for_already_restored_dataset(self):
+        dataset = self.create_draft_dataset(slug="idempotent-restore-target")
+        upload_response = self.upload_valid_file(dataset, filename="restore-again.csv")
+        dataset_file_id = upload_response.data["data"]["id"]
+
+        self.client.force_authenticate(user=self.editor)
+        delete_response = self.client.delete(f"/api/v1/dataset/{dataset.id}/")
+        self.assertEqual(delete_response.status_code, 200)
+
+        first_restore_response = self.restore_dataset(dataset)
+        self.assertEqual(first_restore_response.status_code, 200)
+        self.assertTrue(first_restore_response.data["success"])
+        self.assertEqual(first_restore_response.data["data"]["id"], str(dataset.id))
+
+        audit_count = DatasetAuditLog.objects.filter(
+            dataset=dataset,
+            action="dataset_restored",
+        ).count()
+
+        second_restore_response = self.restore_dataset(dataset)
+        self.assertEqual(second_restore_response.status_code, 200)
+        self.assertTrue(second_restore_response.data["success"])
+        self.assertEqual(
+            second_restore_response.data["message"],
+            "Dataset is already restored.",
+        )
+        self.assertEqual(second_restore_response.data["data"]["id"], str(dataset.id))
+
+        self.assertEqual(
+            DatasetAuditLog.objects.filter(
+                dataset=dataset,
+                action="dataset_restored",
+            ).count(),
+            audit_count,
+        )
+
+        detail_response = self.client.get(f"/api/v1/dataset/{dataset.id}/")
+        self.assertEqual(detail_response.status_code, 200)
+
+        file_response = self.client.get(f"/api/v1/dataset/files/{dataset_file_id}/")
+        self.assertEqual(file_response.status_code, 200)
+
+        actions = set(
+            DatasetAuditLog.objects.filter(dataset=dataset).values_list(
+                "action", flat=True
+            )
+        )
+        self.assertIn("dataset_deleted", actions)
+        self.assertIn("dataset_restored", actions)
 
     def test_restore_requires_dataset_delete_permission(self):
         dataset = self.create_draft_dataset(slug="restore-permission-dataset")

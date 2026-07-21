@@ -435,6 +435,7 @@ class DatasetBulkActionJob(BaseModel):
         on_delete=models.PROTECT,
         related_name="dataset_bulk_action_jobs",
     )
+    request_signature = models.CharField(max_length=64, blank=True, default="", db_index=True)
     action = models.CharField(max_length=20)
     status = models.CharField(
         max_length=20,
@@ -458,6 +459,13 @@ class DatasetBulkActionJob(BaseModel):
         db_table = "dataset_bulk_action_jobs"
         verbose_name = "Dataset Bulk Action Job"
         verbose_name_plural = "Dataset Bulk Action Jobs"
+        constraints = [
+            models.UniqueConstraint(
+                fields=("requested_by", "request_signature"),
+                condition=~models.Q(request_signature=""),
+                name="unique_dataset_bulk_action_signature",
+            )
+        ]
         indexes = [
             models.Index(fields=["requested_by", "-created_at"], name="dataset_bulk_action_user_idx"),
             models.Index(fields=["status", "-created_at"], name="dataset_bulk_action_status_idx"),
@@ -473,6 +481,7 @@ class DatasetBulkUploadJob(BaseModel):
         on_delete=models.PROTECT,
         related_name="dataset_bulk_upload_jobs",
     )
+    request_signature = models.CharField(max_length=64, blank=True, default="", db_index=True)
     status = models.CharField(
         max_length=20,
         choices=DatasetBulkActionJobStatus.CHOICES,
@@ -493,6 +502,13 @@ class DatasetBulkUploadJob(BaseModel):
         db_table = "dataset_bulk_upload_jobs"
         verbose_name = "Dataset Bulk Upload Job"
         verbose_name_plural = "Dataset Bulk Upload Jobs"
+        constraints = [
+            models.UniqueConstraint(
+                fields=("requested_by", "request_signature"),
+                condition=~models.Q(request_signature=""),
+                name="unique_dataset_bulk_upload_signature",
+            )
+        ]
         indexes = [
             models.Index(fields=["requested_by", "-created_at"], name="dataset_bulk_upload_user_idx"),
             models.Index(fields=["status", "-created_at"], name="dataset_bulk_upload_status_idx"),
