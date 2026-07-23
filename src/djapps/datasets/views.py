@@ -54,6 +54,8 @@ from djapps.datasets.models import (
     Tag,
 )
 from djapps.datasets.helpers import (
+    build_dataset_bulk_action_signature,
+    build_dataset_bulk_upload_signature,
     create_status_history,
     filter_related_queryset_by_dataset_access,
     request_audit_details,
@@ -1175,15 +1177,42 @@ class DatasetAdminBulkUploadView(StandardizedAPIView):
     def post(self, request):
         validated_data, files = self._build_upload_payload(request)
         items = validated_data["items"]
+        request_signature = build_dataset_bulk_upload_signature(
+            user_id=request.user.id,
+            items=items,
+            publish_after_upload=validated_data.get("publish_after_upload", False),
+            reason=validated_data.get("reason", ""),
+            files=files,
+        )
 
         with transaction.atomic():
-            job = DatasetBulkUploadJob.objects.create(
+            job, created = DatasetBulkUploadJob.objects.get_or_create(
                 requested_by=request.user,
-                publish_after_upload=validated_data.get("publish_after_upload", False),
-                reason=validated_data.get("reason", ""),
-                audit_context=request_audit_details(request),
-                total_count=len(items),
+                request_signature=request_signature,
+                defaults={
+                    "publish_after_upload": validated_data.get(
+                        "publish_after_upload", False
+                    ),
+                    "reason": validated_data.get("reason", ""),
+                    "audit_context": request_audit_details(request),
+                    "total_count": len(items),
+                },
             )
+            if not created:
+                response_serializer = self.response_serializer_class(job)
+                return success_response(
+                    data=response_serializer.data,
+                    message="Bulk dataset file upload job already exists.",
+                    status_code=(
+                        status.HTTP_202_ACCEPTED
+                        if job.status
+                        in {
+                            DatasetBulkUploadJobStatus.QUEUED,
+                            DatasetBulkUploadJobStatus.RUNNING,
+                        }
+                        else status.HTTP_200_OK
+                    ),
+                )
 
             for item_data, uploaded_file in zip(items, files):
                 dataset = get_object_or_404(
@@ -1315,25 +1344,49 @@ class DatasetAdminBulkActionView(DatasetBaseView):
         action = serializer.validated_data["action"]
         dataset_ids = serializer.validated_data["dataset_ids"]
         reason = serializer.validated_data.get("reason", "")
+        request_signature = build_dataset_bulk_action_signature(
+            user_id=request.user.id,
+            action=action,
+            dataset_ids=dataset_ids,
+            reason=reason,
+        )
 
         with transaction.atomic():
-            job = DatasetBulkActionJob.objects.create(
+            job, created = DatasetBulkActionJob.objects.get_or_create(
                 requested_by=request.user,
-                action=action,
-                dataset_ids=[str(dataset_id) for dataset_id in dataset_ids],
-                reason=reason,
-                audit_context=request_audit_details(request),
-                requested_count=len(dataset_ids),
+                request_signature=request_signature,
+                defaults={
+                    "action": action,
+                    "dataset_ids": [str(dataset_id) for dataset_id in dataset_ids],
+                    "reason": reason,
+                    "audit_context": request_audit_details(request),
+                    "requested_count": len(dataset_ids),
+                },
             )
+            if not created:
+                response_serializer = self.response_serializer_class(job)
+                return success_response(
+                    data=response_serializer.data,
+                    message="Bulk dataset action job already exists.",
+                    status_code=(
+                        status.HTTP_202_ACCEPTED
+                        if job.status
+                        in {
+                            DatasetBulkActionJobStatus.QUEUED,
+                            DatasetBulkActionJobStatus.RUNNING,
+                        }
+                        else status.HTTP_200_OK
+                    ),
+                )
 
-        self.enqueue_bulk_action_job(job)
-        job.refresh_from_db()
-        response_serializer = self.response_serializer_class(job)
-        return success_response(
-            data=response_serializer.data,
-            message="Bulk dataset action job queued successfully.",
-            status_code=status.HTTP_202_ACCEPTED,
-        )
+            self.enqueue_bulk_action_job(job)
+            job.refresh_from_db()
+            response_serializer = self.response_serializer_class(job)
+            return success_response(
+                data=response_serializer.data,
+                message="Bulk dataset action job queued successfully.",
+                status_code=status.HTTP_202_ACCEPTED,
+            )
 
 
 class DatasetDetailView(DatasetBaseView):
@@ -1752,6 +1805,12 @@ class DatasetPublishView(DatasetBaseView):
         serializer = DatasetPublishSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        if dataset.status == DatasetStatus.PUBLISHED and dataset.visibility:
+            return success_response(
+                data=self.serialize_detail(dataset),
+                message="Dataset is already published.",
+            )
+
         if dataset.status != DatasetStatus.APPROVED:
             raise ValidationError(
                 {"status": ["Only approved datasets can be published."]}
@@ -1817,6 +1876,12 @@ class DatasetUnpublishView(DatasetBaseView):
         dataset = self.get_object()
         serializer = DatasetPublishSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        if dataset.status == DatasetStatus.APPROVED and not dataset.visibility:
+            return success_response(
+                data=self.serialize_detail(dataset),
+                message="Dataset is already unpublished.",
+            )
 
         if dataset.status != DatasetStatus.PUBLISHED:
             raise ValidationError(
@@ -1899,8 +1964,9 @@ class DatasetRestoreView(DatasetBaseView):
         serializer.is_valid(raise_exception=True)
 
         if not dataset.is_deleted:
-            raise ValidationError(
-                {"dataset": ["Only deleted datasets can be restored."]}
+            return success_response(
+                data=self.serialize_detail(dataset),
+                message="Dataset is already restored.",
             )
 
         dataset.restore()
@@ -2418,17 +2484,33 @@ class DatasetFileView(DatasetScopedViewSet):
             if admin_note:
                 validation_notes = f"{validation_notes} Admin note: {admin_note}"
 
+        validation_status = (
+            FileValidationStatus.VALIDATED
+            if is_valid
+            else FileValidationStatus.REJECTED
+        )
+
+        if (
+            dataset_file.filename == inspection["filename"]
+            and dataset_file.file_size == inspection["file_size"]
+            and dataset_file.file_format == inspection["file_format"]
+            and dataset_file.checksum == inspection["checksum"]
+            and dataset_file.validation_status == validation_status
+            and dataset_file.is_safe == is_valid
+            and dataset_file.validation_notes == validation_notes
+        ):
+            return success_response(
+                data=self.get_serializer(dataset_file).data,
+                message="Dataset file validation already recorded.",
+            )
+
         dataset_file.filename = inspection["filename"] or dataset_file.filename
         if inspection["file_size"] is not None:
             dataset_file.file_size = inspection["file_size"]
         dataset_file.file_format = inspection["file_format"]
         if inspection["checksum"]:
             dataset_file.checksum = inspection["checksum"]
-        dataset_file.validation_status = (
-            FileValidationStatus.VALIDATED
-            if is_valid
-            else FileValidationStatus.REJECTED
-        )
+        dataset_file.validation_status = validation_status
         dataset_file.validated_at = timezone.now()
         dataset_file.validation_notes = validation_notes
         dataset_file.is_safe = is_valid
