@@ -210,6 +210,18 @@ SPECTACULAR_SETTINGS = {
         'displayRequestDuration': True,
         'docExpansion': 'list',
     },
+    'ENUM_NAME_OVERRIDES': {
+        'DatasetStatusEnum': 'djapps.datasets.models.DatasetStatus.CHOICES',
+        'DatasetFileValidationStatusEnum': 'djapps.datasets.models.FileValidationStatus.CHOICES',
+        'DatasetFrequencyEnum': 'djapps.datasets.models.DatasetFrequency.CHOICES',
+        'APIConsumerTypeEnum': 'djapps.gateway.models.APIConsumer.CONSUMER_TYPES',
+        'APIConsumerStatusEnum': 'djapps.gateway.models.APIConsumer.STATUS_CHOICES',
+        'APIKeyStatusEnum': 'djapps.gateway.models.APIKey.STATUS_CHOICES',
+        'DatasetReviewActionEnum': (
+            ('approve', 'Approve'),
+            ('reject', 'Reject'),
+        ),
+    },
 }
 
 

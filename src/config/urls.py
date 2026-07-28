@@ -29,9 +29,6 @@ urlpatterns = [
     path('redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
     path(f"{prefix}/", include("djapps.user_management.api.urls")),
     path(f"{prefix}/gateway/", include("djapps.gateway.urls")),
-    path("api/gateway/", include("djapps.gateway.urls")),
-    path("api/", include("djapps.user_management.api.urls")),
     path(f"{prefix}/developer/", include("djapps.gateway.developer_urls")),
     path(f"{prefix}/dataset/", include("djapps.datasets.urls")),
-    path("dataset/", include("djapps.datasets.urls")),
 ]

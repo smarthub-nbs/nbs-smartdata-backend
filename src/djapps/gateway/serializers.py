@@ -1,4 +1,6 @@
 from django.urls import reverse
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from djapps.datasets.models import Dataset, DatasetFile, DatasetVersion, FileValidationStatus
@@ -50,14 +52,17 @@ class OpenDatasetFileSerializer(serializers.ModelSerializer):
             and obj.file_format.lower() in STRUCTURED_DATA_SUPPORTED_FORMATS
         )
 
+    @extend_schema_field(OpenApiTypes.STR)
     def get_download_url(self, obj):
         return self._build_url("gateway-dataset-file-download", obj)
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_data_url(self, obj):
         if not self._has_structured_access(obj):
             return None
         return self._build_url("gateway-dataset-file-data", obj)
 
+    @extend_schema_field(OpenApiTypes.BOOL)
     def get_data_available(self, obj):
         return self._has_structured_access(obj)
 
@@ -75,6 +80,7 @@ class OpenDatasetVersionSerializer(serializers.ModelSerializer):
             "files",
         )
 
+    @extend_schema_field(OpenDatasetFileSerializer(many=True))
     def get_files(self, obj):
         public_files = obj.files.filter(
             validation_status=FileValidationStatus.VALIDATED,
@@ -123,10 +129,12 @@ class OpenDatasetSerializer(serializers.ModelSerializer):
             "published_at",
         )
 
+    @extend_schema_field(TagSerializer(many=True))
     def get_tags(self, obj):
         tags = [item.tag for item in obj.dataset_tags.select_related("tag").all()]
         return TagSerializer(tags, many=True).data
 
+    @extend_schema_field(OpenDatasetVersionSerializer(many=True))
     def get_versions(self, obj):
         versions = obj.versions.order_by("-created_at")
         return OpenDatasetVersionSerializer(versions, many=True, context=self.context).data
@@ -211,18 +219,22 @@ class GatewayDatasetChangeSerializer(serializers.ModelSerializer):
         versions = list(obj.versions.all())
         return max(versions, key=lambda item: item.created_at) if versions else None
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_title(self, obj):
         metadata = self._latest_metadata(obj)
         return metadata.title if metadata is not None else None
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_publisher_name(self, obj):
         metadata = self._latest_metadata(obj)
         return metadata.publisher_name if metadata is not None else None
 
+    @extend_schema_field(serializers.UUIDField(allow_null=True))
     def get_latest_version_id(self, obj):
         version = self._latest_version(obj)
         return version.id if version is not None else None
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_latest_version_number(self, obj):
         version = self._latest_version(obj)
         return version.version_number if version is not None else None
@@ -347,6 +359,7 @@ class APIKeyDetailSerializer(serializers.ModelSerializer):
             "scopes",
         )
 
+    @extend_schema_field(serializers.ListField(child=serializers.CharField()))
     def get_scopes(self, obj):
         return list(obj.scopes.values_list("code", flat=True))
 
