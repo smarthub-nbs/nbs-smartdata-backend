@@ -1,14 +1,6 @@
 from rest_framework.permissions import BasePermission
 
-ROLE_GUEST = "guest"
-ROLE_USER = "user"
-ROLE_DEVELOPER = "developer"
-ROLE_RESEARCHER = "researcher"
-ROLE_EDITOR = "editor"
-ROLE_ADMIN = "admin"
-ROLE_SUPER_ADMIN = "super_admin"
-
-ADMIN_GROUPS = (ROLE_ADMIN, ROLE_SUPER_ADMIN)
+from ..roles import ADMIN_GROUPS
 
 
 def is_authenticated_user(user):
@@ -25,7 +17,7 @@ def user_has_any_group(user, group_names):
 def is_admin_like(user):
     return bool(
         is_authenticated_user(user)
-        and (user.is_superuser or user.is_staff or user_has_any_group(user, ADMIN_GROUPS))
+        and (user.is_superuser or user_has_any_group(user, ADMIN_GROUPS))
     )
 
 

@@ -1,5 +1,85 @@
 # Smarthub Commands
 
+## Docker Workflow
+
+Run Docker commands from the repository root:
+
+```bash
+cd Smarthub
+```
+
+Prepare local Docker env values:
+
+```bash
+cp .env.docker.example .env.docker
+```
+
+Build the app image:
+
+```bash
+docker compose --env-file .env.docker build
+```
+
+Start the main services:
+
+```bash
+docker compose --env-file .env.docker up web celery_worker
+```
+
+Start in the background:
+
+```bash
+docker compose --env-file .env.docker up -d web celery_worker
+```
+
+Apply migrations:
+
+```bash
+docker compose --env-file .env.docker --profile tools run --rm migrate
+```
+
+Create an admin user:
+
+```bash
+docker compose --env-file .env.docker run --rm web python manage.py createsuperuser
+```
+
+Run tests:
+
+```bash
+docker compose --env-file .env.docker --profile tools run --rm test
+```
+
+Open Django shell:
+
+```bash
+docker compose --env-file .env.docker run --rm web python manage.py shell
+```
+
+Create migrations:
+
+```bash
+docker compose --env-file .env.docker run --rm web python manage.py makemigrations
+```
+
+Collect static files:
+
+```bash
+docker compose --env-file .env.docker --profile tools run --rm collectstatic
+```
+
+Stop containers:
+
+```bash
+docker compose --env-file .env.docker down
+```
+
+Stop containers and remove local volumes:
+
+```bash
+docker compose --env-file .env.docker down -v
+```
+
 Most commands should be run from the Django project directory:
 
 ```bash
@@ -50,13 +130,33 @@ Useful local URLs:
 
 ```text
 http://127.0.0.1:8000/admin/
-http://127.0.0.1:8000/api/ping/
+http://127.0.0.1:8000/api/v1/ping/
 ```
 
 Smoke-test the public API endpoint while the server is running:
 
 ```bash
-curl http://127.0.0.1:8000/api/ping/
+curl http://127.0.0.1:8000/api/v1/ping/
+```
+
+## Celery
+
+Start Redis locally:
+
+```bash
+docker compose --env-file .env.docker up -d redis
+```
+
+Start a Celery worker:
+
+```bash
+uv run celery -A config worker -l info
+```
+
+Run a quick probe task from the Django shell:
+
+```bash
+uv run python manage.py shell -c "from djapps.datasets.tasks import bulk_action_probe; print(bulk_action_probe.delay(action='approve', dataset_ids=['1', '2']).id)"
 ```
 
 ## Database And Migrations

@@ -2,26 +2,47 @@ from django.urls import path
 
 from .views import (
     AdminAPIView,
+    AdminActivityAPIView,
+    AdminDashboardAPICallsSummaryAPIView,
+    AdminDashboardDatasetActivitySummaryAPIView,
+    AdminDashboardDownloadsSummaryAPIView,
+    AdminDashboardSummaryAPIView,
+    AdminDashboardViewsSummaryAPIView,
+    CSRFCookieAPIView,
     DeveloperAPIView,
+    EmailVerificationConfirmAPIView,
+    EmailVerificationRequestAPIView,
     EditorAPIView,
     GitHubSocialLoginAPIView,
+    GroupListAPIView,
     GoogleSocialLoginAPIView,
     LegacyMeAPIView,
     LoginAPIView,
     LogoutAPIView,
     MeAPIView,
+    PasswordChangeAPIView,
+    PasswordResetConfirmAPIView,
+    PasswordResetRequestAPIView,
     PermissionProtectedAPIView,
     PublicPingAPIView,
     RefreshAPIView,
     RegisteredUserAPIView,
     RegisterAPIView,
     ResearcherAPIView,
+    UserDeactivateAPIView,
+    UserDetailAPIView,
+    UserGroupAssignmentAPIView,
+    UserListAPIView,
+    UserReactivateAPIView,
 )
+
 
 prefix = "api/v1/"
 
+
 urlpatterns = [
     path("ping/", PublicPingAPIView.as_view(), name="api-ping"),
+    path("auth/csrf/", CSRFCookieAPIView.as_view(), name="api-auth-csrf"),
     path("auth/register/", RegisterAPIView.as_view(), name="api-auth-register"),
     path("auth/login/", LoginAPIView.as_view(), name="api-auth-login"),
     path(
@@ -34,14 +55,83 @@ urlpatterns = [
         GitHubSocialLoginAPIView.as_view(),
         name="api-auth-social-github",
     ),
+    path(
+        "auth/password/change/",
+        PasswordChangeAPIView.as_view(),
+        name="api-auth-password-change",
+    ),
+    path(
+        "auth/password/reset/request/",
+        PasswordResetRequestAPIView.as_view(),
+        name="api-auth-password-reset-request",
+    ),
+    path(
+        "auth/password/reset/confirm/",
+        PasswordResetConfirmAPIView.as_view(),
+        name="api-auth-password-reset-confirm",
+    ),
+    path(
+        "auth/email/verify/request/",
+        EmailVerificationRequestAPIView.as_view(),
+        name="api-auth-email-verification-request",
+    ),
+    path(
+        "auth/email/verify/confirm/",
+        EmailVerificationConfirmAPIView.as_view(),
+        name="api-auth-email-verification-confirm",
+    ),
     path("auth/refresh/", RefreshAPIView.as_view(), name="api-auth-refresh"),
     path("auth/logout/", LogoutAPIView.as_view(), name="api-auth-logout"),
     path("auth/me/", MeAPIView.as_view(), name="api-auth-me"),
     path("me/", LegacyMeAPIView.as_view(), name="api-me"),
+    path("users/groups/", GroupListAPIView.as_view(), name="api-user-groups"),
+    path("users/", UserListAPIView.as_view(), name="api-users"),
+    path("users/<uuid:user_id>/", UserDetailAPIView.as_view(), name="api-user-detail"),
+    path(
+        "users/<uuid:user_id>/deactivate/",
+        UserDeactivateAPIView.as_view(),
+        name="api-user-deactivate",
+    ),
+    path(
+        "users/<uuid:user_id>/reactivate/",
+        UserReactivateAPIView.as_view(),
+        name="api-user-reactivate",
+    ),
+    path(
+        "users/<uuid:user_id>/groups/",
+        UserGroupAssignmentAPIView.as_view(),
+        name="api-user-groups-assign",
+    ),
     path("registered/", RegisteredUserAPIView.as_view(), name="api-registered"),
     path("editor/", EditorAPIView.as_view(), name="api-editor"),
     path("developer/", DeveloperAPIView.as_view(), name="api-developer"),
     path("researcher/", ResearcherAPIView.as_view(), name="api-researcher"),
     path("admin/", AdminAPIView.as_view(), name="api-admin"),
+    path("admin/activity/", AdminActivityAPIView.as_view(), name="api-admin-activity"),
+    path(
+        "admin/dashboard/summary/",
+        AdminDashboardSummaryAPIView.as_view(),
+        name="api-admin-dashboard-summary",
+    ),
+    path(
+        "admin/dashboard/api-calls/summary/",
+        AdminDashboardAPICallsSummaryAPIView.as_view(),
+        name="api-admin-dashboard-api-calls-summary",
+    ),
+    path(
+        "admin/dashboard/downloads/summary/",
+        AdminDashboardDownloadsSummaryAPIView.as_view(),
+        name="api-admin-dashboard-downloads-summary",
+    ),
+    path(
+        "admin/dashboard/views/summary/",
+        AdminDashboardViewsSummaryAPIView.as_view(),
+        name="api-admin-dashboard-views-summary",
+    ),
+    path(
+        "admin/dashboard/datasets/activity/summary/",
+        AdminDashboardDatasetActivitySummaryAPIView.as_view(),
+        name="api-admin-dashboard-dataset-activity-summary",
+    ),
     path("permission/", PermissionProtectedAPIView.as_view(), name="api-permission"),
 ]

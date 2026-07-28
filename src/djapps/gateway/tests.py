@@ -19,6 +19,7 @@ from djapps.datasets.models import (
     Tag,
 )
 from djapps.user_management.models import User
+from djapps.user_management.roles import ensure_group_permissions
 
 from .models import APIConsumer, APIUsageLog
 from .serializers import OpenDatasetSerializer
@@ -70,11 +71,11 @@ class OpenDatasetFixtureMixin:
         self.client = APIClient()
         self.user = User.objects.create_user(
             email="publisher@example.com",
-            password="password123",
+            password="Password123!",
             first_name="Data",
             last_name="Editor",
         )
-        developer_group, _ = Group.objects.get_or_create(name="developer")
+        developer_group, _ = ensure_group_permissions("developer")
         self.user.groups.add(developer_group)
         self.category = Category.objects.create(name="Climate", slug="climate")
         self.tag = Tag.objects.create(name="Open Data", slug="open-data")
@@ -256,18 +257,18 @@ class OpenDatasetSerializerTests(OpenDatasetFixtureMixin, TestCase):
         self.assertEqual(data["versions"][0]["files"][0]["id"], str(self.public_file.id))
         self.assertEqual(
             data["versions"][0]["files"][0]["download_url"],
-            f"/api/gateway/files/{self.public_file.id}/download/",
+            f"/api/v1/gateway/files/{self.public_file.id}/download/",
         )
         self.assertEqual(
             data["versions"][0]["files"][0]["data_url"],
-            f"/api/gateway/files/{self.public_file.id}/data/",
+            f"/api/v1/gateway/files/{self.public_file.id}/data/",
         )
         self.assertTrue(data["versions"][0]["files"][0]["data_available"])
 
 
 class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
     def test_gateway_dataset_list_requires_api_key(self):
-        response = self.client.get("/api/gateway/datasets/")
+        response = self.client.get("/api/v1/gateway/datasets/")
 
         self.assertEqual(response.status_code, 401)
         self.assertFalse(response.data["success"])
@@ -292,7 +293,7 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
         )
 
         response = self.client.get(
-            "/api/gateway/datasets/",
+            "/api/v1/gateway/datasets/",
             {
                 "q": "climate",
                 "publisher": "Data Editor",
@@ -309,7 +310,7 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
 
     def test_gateway_dataset_detail_supports_slug_lookup(self):
         response = self.client.get(
-            f"/api/gateway/datasets/{self.dataset.slug}/",
+            f"/api/v1/gateway/datasets/{self.dataset.slug}/",
             **self.gateway_headers(),
         )
 
@@ -318,13 +319,13 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
         self.assertEqual(response.data["data"]["slug"], "public-climate-data")
         self.assertTrue(
             response.data["data"]["versions"][0]["files"][0]["download_url"].endswith(
-                f"/api/gateway/files/{self.public_file.id}/download/"
+                f"/api/v1/gateway/files/{self.public_file.id}/download/"
             )
         )
 
     def test_gateway_dataset_metadata_endpoint_returns_metadata(self):
         response = self.client.get(
-            f"/api/gateway/datasets/{self.dataset.slug}/metadata/",
+            f"/api/v1/gateway/datasets/{self.dataset.slug}/metadata/",
             **self.gateway_headers(),
         )
 
@@ -344,7 +345,7 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
         )
 
         response = self.client.get(
-            f"/api/gateway/datasets/{private_dataset.slug}/",
+            f"/api/v1/gateway/datasets/{private_dataset.slug}/",
             **self.gateway_headers(),
         )
 
@@ -354,7 +355,7 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
 
     def test_gateway_dataset_list_rejects_invalid_api_key(self):
         response = self.client.get(
-            "/api/gateway/datasets/",
+            "/api/v1/gateway/datasets/",
             HTTP_X_API_KEY="smartdata_invalid",
         )
 
@@ -365,7 +366,7 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
     def test_gateway_categories_endpoint_lists_public_categories(self):
         Category.objects.create(name="Unused", slug="unused")
 
-        response = self.client.get("/api/gateway/categories/", **self.gateway_headers())
+        response = self.client.get("/api/v1/gateway/categories/", **self.gateway_headers())
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data["success"])
@@ -374,7 +375,7 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
 
     def test_gateway_formats_endpoint_lists_public_safe_formats(self):
         response = self.client.get(
-            "/api/gateway/datasets/formats/",
+            "/api/v1/gateway/datasets/formats/",
             **self.gateway_headers(),
         )
 
@@ -387,7 +388,7 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
 
     def test_gateway_dataset_files_endpoint_lists_public_safe_files(self):
         response = self.client.get(
-            f"/api/gateway/datasets/{self.dataset.slug}/files/",
+            f"/api/v1/gateway/datasets/{self.dataset.slug}/files/",
             **self.gateway_headers(),
         )
 
@@ -398,12 +399,12 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
         self.assertEqual(response.data["data"][0]["version_number"], "1.0")
         self.assertEqual(
             response.data["data"][0]["data_url"],
-            f"/api/gateway/files/{self.public_file.id}/data/",
+            f"/api/v1/gateway/files/{self.public_file.id}/data/",
         )
 
     def test_gateway_dataset_download_endpoint_downloads_latest_public_file(self):
         response = self.client.get(
-            f"/api/gateway/datasets/{self.dataset.slug}/download/",
+            f"/api/v1/gateway/datasets/{self.dataset.slug}/download/",
             **self.gateway_headers(),
         )
 
@@ -413,7 +414,7 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
 
     def test_gateway_download_endpoint_downloads_public_safe_file(self):
         response = self.client.get(
-            f"/api/gateway/files/{self.public_file.id}/download/",
+            f"/api/v1/gateway/files/{self.public_file.id}/download/",
             **self.gateway_headers(),
         )
 
@@ -424,7 +425,7 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
         unsafe_file = DatasetFile.objects.exclude(pk=self.public_file.pk).get()
 
         response = self.client.get(
-            f"/api/gateway/files/{unsafe_file.id}/download/",
+            f"/api/v1/gateway/files/{unsafe_file.id}/download/",
             **self.gateway_headers(),
         )
 
@@ -433,7 +434,7 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
 
     def test_gateway_file_data_endpoint_returns_structured_content(self):
         response = self.client.get(
-            f"/api/gateway/files/{self.public_file.id}/data/",
+            f"/api/v1/gateway/files/{self.public_file.id}/data/",
             {"offset": 0, "limit": 10},
             **self.gateway_headers(),
         )
@@ -463,11 +464,11 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
             file_content=b"country,value\nKE,20\n",
         )
 
-        tag_response = self.client.get("/api/gateway/tags/", **self.gateway_headers())
-        license_response = self.client.get("/api/gateway/licenses/", **self.gateway_headers())
-        publisher_response = self.client.get("/api/gateway/publishers/", **self.gateway_headers())
-        frequency_response = self.client.get("/api/gateway/frequencies/", **self.gateway_headers())
-        region_response = self.client.get("/api/gateway/regions/", **self.gateway_headers())
+        tag_response = self.client.get("/api/v1/gateway/tags/", **self.gateway_headers())
+        license_response = self.client.get("/api/v1/gateway/licenses/", **self.gateway_headers())
+        publisher_response = self.client.get("/api/v1/gateway/publishers/", **self.gateway_headers())
+        frequency_response = self.client.get("/api/v1/gateway/frequencies/", **self.gateway_headers())
+        region_response = self.client.get("/api/v1/gateway/regions/", **self.gateway_headers())
 
         self.assertEqual(tag_response.status_code, 200)
         self.assertEqual(len(tag_response.data["data"]), 2)
@@ -504,31 +505,31 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
         )
 
         versions_response = self.client.get(
-            f"/api/gateway/datasets/{self.dataset.slug}/versions/",
+            f"/api/v1/gateway/datasets/{self.dataset.slug}/versions/",
             **self.gateway_headers(),
         )
         version_detail_response = self.client.get(
-            f"/api/gateway/datasets/{self.dataset.slug}/versions/{latest_version.id}/",
+            f"/api/v1/gateway/datasets/{self.dataset.slug}/versions/{latest_version.id}/",
             **self.gateway_headers(),
         )
         latest_response = self.client.get(
-            f"/api/gateway/datasets/{self.dataset.slug}/latest/",
+            f"/api/v1/gateway/datasets/{self.dataset.slug}/latest/",
             **self.gateway_headers(),
         )
         latest_data_response = self.client.get(
-            f"/api/gateway/datasets/{self.dataset.slug}/latest/data/",
+            f"/api/v1/gateway/datasets/{self.dataset.slug}/latest/data/",
             **self.gateway_headers(),
         )
         stats_response = self.client.get(
-            f"/api/gateway/datasets/{self.dataset.slug}/stats/",
+            f"/api/v1/gateway/datasets/{self.dataset.slug}/stats/",
             **self.gateway_headers(),
         )
         schema_response = self.client.get(
-            f"/api/gateway/files/{latest_file.id}/schema/",
+            f"/api/v1/gateway/files/{latest_file.id}/schema/",
             **self.gateway_headers(),
         )
         preview_response = self.client.get(
-            f"/api/gateway/files/{latest_file.id}/preview/",
+            f"/api/v1/gateway/files/{latest_file.id}/preview/",
             **self.gateway_headers(),
         )
 
@@ -599,14 +600,14 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
 
         cutoff = timezone.now() - timedelta(days=1)
 
-        facets_response = self.client.get("/api/gateway/datasets/facets/", **self.gateway_headers())
+        facets_response = self.client.get("/api/v1/gateway/datasets/facets/", **self.gateway_headers())
         changes_response = self.client.get(
-            "/api/gateway/datasets/changes/",
+            "/api/v1/gateway/datasets/changes/",
             {"updated_since": cutoff.isoformat()},
             **self.gateway_headers(),
         )
         filtered_list_response = self.client.get(
-            "/api/gateway/datasets/",
+            "/api/v1/gateway/datasets/",
             {"updated_since": cutoff.isoformat()},
             **self.gateway_headers(),
         )
@@ -679,10 +680,10 @@ class DeveloperAPIKeyManagementTests(OpenDatasetFixtureMixin, TestCase):
         self.assertNotEqual(new_raw_key, old_raw_key)
 
         self.client.force_authenticate(user=None)
-        old_key_response = self.client.get("/api/gateway/datasets/", **self.gateway_headers(old_raw_key))
+        old_key_response = self.client.get("/api/v1/gateway/datasets/", **self.gateway_headers(old_raw_key))
         self.assertEqual(old_key_response.status_code, 401)
 
-        new_key_response = self.client.get("/api/gateway/datasets/", **self.gateway_headers(new_raw_key))
+        new_key_response = self.client.get("/api/v1/gateway/datasets/", **self.gateway_headers(new_raw_key))
         self.assertEqual(new_key_response.status_code, 200)
 
         self.authenticate_developer()
@@ -698,13 +699,13 @@ class DeveloperAPIKeyManagementTests(OpenDatasetFixtureMixin, TestCase):
         self.assertIsNotNone(self.api_key.revoked_at)
 
         self.client.force_authenticate(user=None)
-        revoked_key_response = self.client.get("/api/gateway/datasets/", **self.gateway_headers(new_raw_key))
+        revoked_key_response = self.client.get("/api/v1/gateway/datasets/", **self.gateway_headers(new_raw_key))
         self.assertEqual(revoked_key_response.status_code, 401)
 
     def test_developer_usage_endpoints_return_logs(self):
-        self.client.get("/api/gateway/datasets/", **self.gateway_headers())
+        self.client.get("/api/v1/gateway/datasets/", **self.gateway_headers())
         self.client.get(
-            f"/api/gateway/datasets/{self.dataset.slug}/metadata/",
+            f"/api/v1/gateway/datasets/{self.dataset.slug}/metadata/",
             **self.gateway_headers(),
         )
 
@@ -730,7 +731,7 @@ class DeveloperAPIKeyManagementTests(OpenDatasetFixtureMixin, TestCase):
     def test_non_developer_cannot_manage_api_keys(self):
         outsider = User.objects.create_user(
             email="outsider@example.com",
-            password="password123",
+            password="Password123!",
         )
         self.client.force_authenticate(user=outsider)
 

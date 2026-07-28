@@ -1,8 +1,81 @@
+import hashlib
+import json
+
+from django.utils import timezone
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 
+from djapps.datasets.audit import log_dataset_event
 from djapps.datasets.models import DatasetFile, DatasetStatus, DatasetStatusHistory, FileValidationStatus
 from djapps.datasets.permissions import has_dataset_admin_access
+
+
+def build_stable_signature(payload):
+    serialized_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized_payload.encode("utf-8")).hexdigest()
+
+
+def _normalized_upload_file(uploaded_file):
+    current_position = uploaded_file.tell() if hasattr(uploaded_file, "tell") else None
+    checksum = hashlib.sha256()
+
+    for chunk in uploaded_file.chunks():
+        checksum.update(chunk)
+
+    if current_position is not None:
+        uploaded_file.seek(current_position)
+
+    return {
+        "name": uploaded_file.name,
+        "size": uploaded_file.size,
+        "checksum": checksum.hexdigest(),
+    }
+
+
+def build_dataset_bulk_action_signature(*, user_id, action, dataset_ids, reason=""):
+    return build_stable_signature(
+        {
+            "kind": "dataset_bulk_action",
+            "user_id": str(user_id),
+            "action": action,
+            "dataset_ids": sorted(str(dataset_id) for dataset_id in dataset_ids),
+            "reason": reason or "",
+        }
+    )
+
+
+def build_dataset_bulk_upload_signature(
+    *,
+    user_id,
+    items,
+    files,
+    publish_after_upload=False,
+    reason="",
+):
+    paired_items = []
+    for item, uploaded_file in zip(items, files):
+        paired_items.append(
+            {
+                "dataset_id": str(item["dataset_id"]),
+                "dataset_version_id": (
+                    str(item["dataset_version_id"])
+                    if item.get("dataset_version_id") is not None
+                    else None
+                ),
+                "is_primary": bool(item.get("is_primary", True)),
+                "file": _normalized_upload_file(uploaded_file),
+            }
+        )
+
+    return build_stable_signature(
+        {
+            "kind": "dataset_bulk_upload",
+            "user_id": str(user_id),
+            "items": sorted(paired_items, key=lambda item: item["dataset_id"]),
+            "publish_after_upload": bool(publish_after_upload),
+            "reason": reason or "",
+        }
+    )
 
 
 def request_audit_details(request, **extra):
@@ -27,6 +100,68 @@ def create_status_history(dataset, changed_by, old_status, new_status, reason):
         new_status=new_status,
         reason=reason,
     )
+
+
+def format_validation_error(exc):
+    if isinstance(exc.detail, list):
+        return " ".join(str(item) for item in exc.detail)
+    if isinstance(exc.detail, dict):
+        return str(exc.detail)
+    return str(exc.detail)
+
+
+def process_dataset_bulk_action(
+    dataset,
+    *,
+    action,
+    reason,
+    actor,
+    audit_details=None,
+):
+    old_status = dataset.status
+
+    if action == "approve":
+        if dataset.status != DatasetStatus.IN_REVIEW:
+            raise ValidationError("Only datasets in review can be approved.")
+        dataset.status = DatasetStatus.APPROVED
+        final_reason = reason or "Dataset approved for publication."
+        audit_action = "dataset_review_approved"
+        update_fields = ["status", "visibility", "updated_at"]
+    elif action == "reject":
+        if dataset.status != DatasetStatus.IN_REVIEW:
+            raise ValidationError("Only datasets in review can be rejected.")
+        dataset.status = DatasetStatus.REJECTED
+        dataset.visibility = False
+        final_reason = reason
+        audit_action = "dataset_review_rejected"
+        update_fields = ["status", "visibility", "updated_at"]
+    else:
+        if dataset.status != DatasetStatus.APPROVED:
+            raise ValidationError("Only approved datasets can be published.")
+        dataset.status = DatasetStatus.PUBLISHED
+        dataset.visibility = True
+        dataset.published_at = dataset.published_at or timezone.now()
+        final_reason = reason or "Published via API."
+        audit_action = "dataset_published"
+        update_fields = ["status", "visibility", "published_at", "updated_at"]
+
+    dataset.save(update_fields=update_fields)
+    create_status_history(dataset, actor, old_status, dataset.status, final_reason)
+    log_dataset_event(
+        dataset,
+        audit_action,
+        actor=actor,
+        details={
+            **(audit_details or {}),
+            "old_status": old_status,
+            "new_status": dataset.status,
+            "reason": final_reason,
+        },
+    )
+    return {
+        "dataset_id": str(dataset.id),
+        "status": dataset.status,
+    }
 
 
 def validate_dataset_ready_for_review(dataset):

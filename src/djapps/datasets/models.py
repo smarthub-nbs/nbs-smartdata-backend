@@ -42,6 +42,34 @@ class DatasetFrequency:
     )
 
 
+class DatasetBulkActionJobStatus:
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+    CHOICES = (
+        (QUEUED, "Queued"),
+        (RUNNING, "Running"),
+        (COMPLETED, "Completed"),
+        (FAILED, "Failed"),
+    )
+
+
+class DatasetBulkUploadJobStatus:
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+    CHOICES = (
+        (QUEUED, "Queued"),
+        (RUNNING, "Running"),
+        (COMPLETED, "Completed"),
+        (FAILED, "Failed"),
+    )
+
+
 def generate_unique_slug(instance, source_value, *, fallback="item"):
     slug_field = instance._meta.get_field("slug")
     max_length = slug_field.max_length
@@ -60,7 +88,16 @@ def generate_unique_slug(instance, source_value, *, fallback="item"):
 
     return slug
 
+class Region(BaseModel):
+    name = models.CharField(max_length=50)
+    
+    class Meta:
+        db_table="regions"
+        verbose_name="Region"
+        verbose_name_plural="Regions"
 
+    def __str__(self):
+        return self.name
 class Category(BaseModel):
 
     name = models.CharField(max_length=50)
@@ -105,6 +142,24 @@ class Dataset(BaseModel):
         verbose_name_plural = "Datasets"
         base_manager_name = "all_objects"
         default_manager_name = "objects"
+        indexes = [
+            models.Index(
+                fields=["status", "visibility", "deleted_at"],
+                name="dataset_status_vis_idx",
+            ),
+            models.Index(
+                fields=["category", "status", "visibility", "deleted_at"],
+                name="dataset_cat_status_idx",
+            ),
+            models.Index(
+                fields=["publisher_user", "deleted_at"],
+                name="dataset_publisher_idx",
+            ),
+            models.Index(
+                fields=["-published_at", "-created_at"],
+                name="dataset_pub_created_idx",
+            ),
+        ]
         permissions = (
             ("review_dataset", "Can review dataset"),
             ("publish_dataset", "Can publish dataset"),
@@ -138,6 +193,9 @@ class DatasetVersion(BaseModel):
         db_table = "dataset_versions"
         verbose_name = "Dataset Version"
         verbose_name_plural = "Dataset Versions"
+        indexes = [
+            models.Index(fields=["dataset", "-created_at"], name="dataset_version_latest_idx"),
+        ]
 
     def __str__(self):
         return f"{self.dataset.slug} - v{self.version_number}"
@@ -169,6 +227,13 @@ class DatasetFile(BaseModel):
         db_table = "dataset_files"
         verbose_name = "Dataset File"
         verbose_name_plural = "Dataset Files"
+        indexes = [
+            models.Index(fields=["dataset_version", "is_primary"], name="dataset_file_primary_idx"),
+            models.Index(fields=["validation_status", "is_safe"], name="dataset_file_validation_idx"),
+            models.Index(fields=["file_format"], name="dataset_file_format_idx"),
+            models.Index(fields=["checksum"], name="dataset_file_checksum_idx"),
+            models.Index(fields=["dataset_version", "-created_at"], name="dataset_file_latest_idx"),
+        ]
 
     def __str__(self):
         return self.filename
@@ -204,9 +269,43 @@ class DatasetTag(BaseModel):
         db_table = "dataset_tags"
         verbose_name = "Dataset Tag"
         verbose_name_plural = "Dataset Tags"
+        indexes = [
+            models.Index(fields=["dataset", "tag"], name="dataset_tag_lookup_idx"),
+        ]
 
     def __str__(self):
         return f"{self.dataset.slug} - {self.tag.name}"
+
+
+class DatasetBookmark(BaseModel):
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="dataset_bookmarks",
+    )
+    dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.CASCADE,
+        related_name="bookmarks",
+    )
+
+    class Meta:
+        db_table = "dataset_bookmarks"
+        verbose_name = "Dataset Bookmark"
+        verbose_name_plural = "Dataset Bookmarks"
+        indexes = [
+            models.Index(fields=["user", "-created_at"], name="dataset_bookmark_user_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("user", "dataset"),
+                name="unique_dataset_bookmark",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.user.email} -> {self.dataset.slug}"
 
 
 class DatasetStatusHistory(BaseModel):
@@ -224,6 +323,10 @@ class DatasetStatusHistory(BaseModel):
         db_table = "dataset_status_history"
         verbose_name = "Dataset Status History"
         verbose_name_plural = "Dataset Status Histories"
+        indexes = [
+            models.Index(fields=["dataset", "-changed_at"], name="dataset_status_hist_idx"),
+            models.Index(fields=["changed_by", "-changed_at"], name="dataset_status_actor_idx"),
+        ]
 
     def __str__(self):
         return f"{self.dataset.slug}: {self.old_status} -> {self.new_status} at {self.changed_at}"
@@ -248,6 +351,13 @@ class DatasetMetadata(BaseModel):
         db_table = "dataset_metadata"
         verbose_name = "Dataset Metadata"
         verbose_name_plural = "Dataset Metadata"
+        indexes = [
+            models.Index(fields=["dataset", "-created_at"], name="dataset_metadata_latest_idx"),
+            models.Index(fields=["frequency"], name="dataset_metadata_frequency_idx"),
+            models.Index(fields=["region"], name="dataset_metadata_region_idx"),
+            models.Index(fields=["year"], name="dataset_metadata_year_idx"),
+            models.Index(fields=["license"], name="dataset_metadata_license_idx"),
+        ]
 
     def resolve_publisher_name(self):
         publisher_user = getattr(self.dataset, "publisher_user", None)
@@ -281,6 +391,9 @@ class IndexingStatus(BaseModel):
         db_table = "indexing_status"
         verbose_name = "Indexing Status"
         verbose_name_plural = "Indexing Statuses"
+        indexes = [
+            models.Index(fields=["dataset", "-indexed_at"], name="indexing_status_latest_idx"),
+        ]
 
     def __str__(self):
         return f"{self.dataset.slug} - {self.status} at {self.indexed_at}"
@@ -306,6 +419,150 @@ class DatasetAuditLog(BaseModel):
         db_table = "dataset_audit_logs"
         verbose_name = "Dataset Audit Log"
         verbose_name_plural = "Dataset Audit Logs"
+        indexes = [
+            models.Index(fields=["dataset", "-created_at"], name="dataset_audit_dataset_idx"),
+            models.Index(fields=["actor", "-created_at"], name="dataset_audit_actor_idx"),
+            models.Index(fields=["action", "-created_at"], name="dataset_audit_action_idx"),
+        ]
 
     def __str__(self):
         return f"{self.dataset.slug} - {self.action} at {self.created_at}"
+
+
+class DatasetBulkActionJob(BaseModel):
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="dataset_bulk_action_jobs",
+    )
+    request_signature = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    action = models.CharField(max_length=20)
+    status = models.CharField(
+        max_length=20,
+        choices=DatasetBulkActionJobStatus.CHOICES,
+        default=DatasetBulkActionJobStatus.QUEUED,
+    )
+    dataset_ids = models.JSONField(default=list, blank=True)
+    reason = models.TextField(blank=True)
+    audit_context = models.JSONField(default=dict, blank=True)
+    task_id = models.CharField(max_length=255, blank=True)
+    requested_count = models.PositiveIntegerField(default=0)
+    processed_count = models.PositiveIntegerField(default=0)
+    failed_count = models.PositiveIntegerField(default=0)
+    processed = models.JSONField(default=list, blank=True)
+    failed = models.JSONField(default=list, blank=True)
+    error = models.TextField(blank=True)
+    started_at = models.DateTimeField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = "dataset_bulk_action_jobs"
+        verbose_name = "Dataset Bulk Action Job"
+        verbose_name_plural = "Dataset Bulk Action Jobs"
+        constraints = [
+            models.UniqueConstraint(
+                fields=("requested_by", "request_signature"),
+                condition=~models.Q(request_signature=""),
+                name="unique_dataset_bulk_action_signature",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["requested_by", "-created_at"], name="dataset_bulk_action_user_idx"),
+            models.Index(fields=["status", "-created_at"], name="dataset_bulk_action_status_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.action} ({self.status})"
+
+
+class DatasetBulkUploadJob(BaseModel):
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="dataset_bulk_upload_jobs",
+    )
+    request_signature = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    status = models.CharField(
+        max_length=20,
+        choices=DatasetBulkActionJobStatus.CHOICES,
+        default=DatasetBulkActionJobStatus.QUEUED,
+    )
+    publish_after_upload = models.BooleanField(default=False)
+    reason = models.TextField(blank=True)
+    audit_context = models.JSONField(default=dict, blank=True)
+    task_id = models.CharField(max_length=255, blank=True)
+    total_count = models.PositiveIntegerField(default=0)
+    processed_count = models.PositiveIntegerField(default=0)
+    failed_count = models.PositiveIntegerField(default=0)
+    error = models.TextField(blank=True)
+    started_at = models.DateTimeField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = "dataset_bulk_upload_jobs"
+        verbose_name = "Dataset Bulk Upload Job"
+        verbose_name_plural = "Dataset Bulk Upload Jobs"
+        constraints = [
+            models.UniqueConstraint(
+                fields=("requested_by", "request_signature"),
+                condition=~models.Q(request_signature=""),
+                name="unique_dataset_bulk_upload_signature",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["requested_by", "-created_at"], name="dataset_bulk_upload_user_idx"),
+            models.Index(fields=["status", "-created_at"], name="dataset_bulk_upload_status_idx"),
+        ]
+
+    def __str__(self):
+        return f"bulk upload ({self.status})"
+
+
+class DatasetBulkUploadJobItem(BaseModel):
+    job = models.ForeignKey(
+        DatasetBulkUploadJob,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.PROTECT,
+        related_name="bulk_upload_items",
+    )
+    dataset_version = models.ForeignKey(
+        DatasetVersion,
+        on_delete=models.PROTECT,
+        related_name="+",
+        blank=True,
+        null=True,
+    )
+    uploaded_file = models.FileField(upload_to="dataset_bulk_uploads/")
+    filename = models.CharField(max_length=255)
+    is_primary = models.BooleanField(default=True)
+    status = models.CharField(
+        max_length=20,
+        choices=DatasetBulkActionJobStatus.CHOICES,
+        default=DatasetBulkActionJobStatus.QUEUED,
+    )
+    result = models.JSONField(default=dict, blank=True)
+    error = models.TextField(blank=True)
+    dataset_file = models.ForeignKey(
+        DatasetFile,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        blank=True,
+        null=True,
+    )
+    processed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = "dataset_bulk_upload_job_items"
+        verbose_name = "Dataset Bulk Upload Job Item"
+        verbose_name_plural = "Dataset Bulk Upload Job Items"
+        indexes = [
+            models.Index(fields=["job", "status"], name="dataset_bulk_upload_item_idx"),
+            models.Index(fields=["dataset", "-created_at"], name="dataset_bulk_upload_ds_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.filename} ({self.status})"

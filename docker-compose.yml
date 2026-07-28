@@ -1,0 +1,166 @@
+x-app-environment: &app-environment
+  DB_NAME: ${DB_NAME}
+  DB_USER: ${DB_USER}
+  DB_PASSWORD: ${DB_PASSWORD}
+  DB_HOST: ${DB_HOST}
+  DB_PORT: ${DB_PORT}
+  CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+  CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: smarthub-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: smarthub-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smarthub-web
+    env_file:
+      - path: .env.docker
+        required: true
+        format: raw
+    environment:
+      <<: *app-environment
+    command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+    ports:
+      - "${WEB_PORT}:8000"
+    volumes:
+      - ./src:/app/src
+      - media_data:/app/src/config/media
+      - static_data:/app/src/config/staticfiles
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smarthub-celery-worker
+    env_file:
+      - path: .env.docker
+        required: true
+        format: raw
+    environment:
+      <<: *app-environment
+    command: ["celery", "-A", "config", "worker", "-l", "info"]
+    volumes:
+      - ./src:/app/src
+      - media_data:/app/src/config/media
+      - static_data:/app/src/config/staticfiles
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smarthub-migrate
+    env_file:
+      - path: .env.docker
+        required: true
+        format: raw
+    environment:
+      <<: *app-environment
+    command: ["python", "manage.py", "migrate"]
+    volumes:
+      - ./src:/app/src
+      - media_data:/app/src/config/media
+      - static_data:/app/src/config/staticfiles
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - tools
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smarthub-test
+    env_file:
+      - path: .env.docker
+        required: true
+        format: raw
+    environment:
+      <<: *app-environment
+    command: ["python", "manage.py", "test"]
+    volumes:
+      - ./src:/app/src
+      - media_data:/app/src/config/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - tools
+
+  collectstatic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smarthub-collectstatic
+    env_file:
+      - path: .env.docker
+        required: true
+        format: raw
+    environment:
+      <<: *app-environment
+    command: ["python", "manage.py", "collectstatic", "--noinput"]
+    volumes:
+      - ./src:/app/src
+      - media_data:/app/src/config/media
+      - static_data:/app/src/config/staticfiles
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - tools
+
+volumes:
+  postgres_data:
+  redis_data:
+  media_data:
+  static_data:

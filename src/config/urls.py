@@ -24,7 +24,7 @@ prefix = "api/v1"
 urlpatterns = [
     path("admin/", admin.site.urls),
     path('schema-viewer/', include('schema_viewer.urls')),
-    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path(f"{prefix}/schema/", SpectacularAPIView.as_view(), name='schema'),
     path('', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
     path(f"{prefix}/", include("djapps.user_management.api.urls")),

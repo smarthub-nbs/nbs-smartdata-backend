@@ -18,8 +18,6 @@ STRUCTURED_DATA_SUPPORTED_FORMATS = {
     "xml",
     "sdmx",
 }
-
-
 class OpenDatasetFileSerializer(serializers.ModelSerializer):
     download_url = serializers.SerializerMethodField()
     data_url = serializers.SerializerMethodField()
@@ -56,6 +54,7 @@ class OpenDatasetFileSerializer(serializers.ModelSerializer):
     def get_download_url(self, obj):
         return self._build_url("gateway-dataset-file-download", obj)
 
+    @extend_schema_field(serializers.CharField(allow_null=True))
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_data_url(self, obj):
         if not self._has_structured_access(obj):

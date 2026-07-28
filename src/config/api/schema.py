@@ -30,7 +30,12 @@ def _schema_component(component):
     raise TypeError(f"Unsupported schema component: {component!r}")
 
 
-def success_response_schema(name, data=None, description="Successful response."):
+def success_response_schema(
+    name,
+    data=None,
+    description="Successful response.",
+    **_kwargs,
+):
     return OpenApiResponse(
         response=inline_serializer(
             name=name,
