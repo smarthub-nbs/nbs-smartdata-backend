@@ -406,13 +406,6 @@ SPECTACULAR_SETTINGS = {
     ],
     'SORT_OPERATIONS': True,
     'SORT_OPERATION_PARAMETERS': True,
-    'ENUM_NAME_OVERRIDES': {
-        'DatasetWorkflowStatusEnum': 'djapps.datasets.models.DatasetStatus.CHOICES',
-        'APIConsumerStatusEnum': 'djapps.gateway.models.APIConsumer.STATUS_CHOICES',
-        'APIKeyStatusEnum': 'djapps.gateway.models.APIKey.STATUS_CHOICES',
-        'DatasetBulkActionEnum': 'djapps.datasets.serializers.DATASET_ADMIN_BULK_ACTION_CHOICES',
-        'DatasetReviewActionEnum': 'djapps.datasets.serializers.DATASET_REVIEW_ACTION_CHOICES',
-    },
     'TAGS': [
         {'name': 'Authentication', 'description': 'JWT and social authentication endpoints.'},
         {'name': 'Authorization', 'description': 'Role and permission protected endpoints.'},
@@ -430,16 +423,15 @@ SPECTACULAR_SETTINGS = {
         'docExpansion': 'list',
     },
     'ENUM_NAME_OVERRIDES': {
+        'DatasetWorkflowStatusEnum': 'djapps.datasets.models.DatasetStatus.CHOICES',
+        'APIConsumerStatusEnum': 'djapps.gateway.models.APIConsumer.STATUS_CHOICES',
+        'APIKeyStatusEnum': 'djapps.gateway.models.APIKey.STATUS_CHOICES',
+        'DatasetBulkActionEnum': 'djapps.datasets.serializers.DATASET_ADMIN_BULK_ACTION_CHOICES',
+        'DatasetReviewActionEnum': 'djapps.datasets.serializers.DATASET_REVIEW_ACTION_CHOICES',
         'DatasetStatusEnum': 'djapps.datasets.models.DatasetStatus.CHOICES',
         'DatasetFileValidationStatusEnum': 'djapps.datasets.models.FileValidationStatus.CHOICES',
         'DatasetFrequencyEnum': 'djapps.datasets.models.DatasetFrequency.CHOICES',
         'APIConsumerTypeEnum': 'djapps.gateway.models.APIConsumer.CONSUMER_TYPES',
-        'APIConsumerStatusEnum': 'djapps.gateway.models.APIConsumer.STATUS_CHOICES',
-        'APIKeyStatusEnum': 'djapps.gateway.models.APIKey.STATUS_CHOICES',
-        'DatasetReviewActionEnum': (
-            ('approve', 'Approve'),
-            ('reject', 'Reject'),
-        ),
     },
 }
 
