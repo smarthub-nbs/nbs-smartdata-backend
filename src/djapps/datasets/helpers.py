@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from django.utils import timezone
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
@@ -5,6 +8,74 @@ from rest_framework.exceptions import ValidationError
 from djapps.datasets.audit import log_dataset_event
 from djapps.datasets.models import DatasetFile, DatasetStatus, DatasetStatusHistory, FileValidationStatus
 from djapps.datasets.permissions import has_dataset_admin_access
+
+
+def build_stable_signature(payload):
+    serialized_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized_payload.encode("utf-8")).hexdigest()
+
+
+def _normalized_upload_file(uploaded_file):
+    current_position = uploaded_file.tell() if hasattr(uploaded_file, "tell") else None
+    checksum = hashlib.sha256()
+
+    for chunk in uploaded_file.chunks():
+        checksum.update(chunk)
+
+    if current_position is not None:
+        uploaded_file.seek(current_position)
+
+    return {
+        "name": uploaded_file.name,
+        "size": uploaded_file.size,
+        "checksum": checksum.hexdigest(),
+    }
+
+
+def build_dataset_bulk_action_signature(*, user_id, action, dataset_ids, reason=""):
+    return build_stable_signature(
+        {
+            "kind": "dataset_bulk_action",
+            "user_id": str(user_id),
+            "action": action,
+            "dataset_ids": sorted(str(dataset_id) for dataset_id in dataset_ids),
+            "reason": reason or "",
+        }
+    )
+
+
+def build_dataset_bulk_upload_signature(
+    *,
+    user_id,
+    items,
+    files,
+    publish_after_upload=False,
+    reason="",
+):
+    paired_items = []
+    for item, uploaded_file in zip(items, files):
+        paired_items.append(
+            {
+                "dataset_id": str(item["dataset_id"]),
+                "dataset_version_id": (
+                    str(item["dataset_version_id"])
+                    if item.get("dataset_version_id") is not None
+                    else None
+                ),
+                "is_primary": bool(item.get("is_primary", True)),
+                "file": _normalized_upload_file(uploaded_file),
+            }
+        )
+
+    return build_stable_signature(
+        {
+            "kind": "dataset_bulk_upload",
+            "user_id": str(user_id),
+            "items": sorted(paired_items, key=lambda item: item["dataset_id"]),
+            "publish_after_upload": bool(publish_after_upload),
+            "reason": reason or "",
+        }
+    )
 
 
 def request_audit_details(request, **extra):
