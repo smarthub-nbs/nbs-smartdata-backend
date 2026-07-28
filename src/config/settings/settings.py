@@ -428,7 +428,6 @@ SPECTACULAR_SETTINGS = {
         'APIKeyStatusEnum': 'djapps.gateway.models.APIKey.STATUS_CHOICES',
         'DatasetBulkActionEnum': 'djapps.datasets.serializers.DATASET_ADMIN_BULK_ACTION_CHOICES',
         'DatasetReviewActionEnum': 'djapps.datasets.serializers.DATASET_REVIEW_ACTION_CHOICES',
-        'DatasetStatusEnum': 'djapps.datasets.models.DatasetStatus.CHOICES',
         'DatasetFileValidationStatusEnum': 'djapps.datasets.models.FileValidationStatus.CHOICES',
         'DatasetFrequencyEnum': 'djapps.datasets.models.DatasetFrequency.CHOICES',
         'APIConsumerTypeEnum': 'djapps.gateway.models.APIConsumer.CONSUMER_TYPES',
