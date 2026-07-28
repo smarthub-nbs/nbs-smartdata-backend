@@ -561,7 +561,7 @@ class DatasetBulkUploadJobItem(BaseModel):
         verbose_name_plural = "Dataset Bulk Upload Job Items"
         indexes = [
             models.Index(fields=["job", "status"], name="dataset_bulk_upload_item_idx"),
-            models.Index(fields=["dataset", "-created_at"], name="dataset_bulk_upload_dataset_idx"),
+            models.Index(fields=["dataset", "-created_at"], name="dataset_bulk_upload_ds_idx"),
         ]
 
     def __str__(self):

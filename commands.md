@@ -1,5 +1,85 @@
 # Smarthub Commands
 
+## Docker Workflow
+
+Run Docker commands from the repository root:
+
+```bash
+cd Smarthub
+```
+
+Prepare local Docker env values:
+
+```bash
+cp .env.docker.example .env.docker
+```
+
+Build the app image:
+
+```bash
+docker compose --env-file .env.docker build
+```
+
+Start the main services:
+
+```bash
+docker compose --env-file .env.docker up web celery_worker
+```
+
+Start in the background:
+
+```bash
+docker compose --env-file .env.docker up -d web celery_worker
+```
+
+Apply migrations:
+
+```bash
+docker compose --env-file .env.docker --profile tools run --rm migrate
+```
+
+Create an admin user:
+
+```bash
+docker compose --env-file .env.docker run --rm web python manage.py createsuperuser
+```
+
+Run tests:
+
+```bash
+docker compose --env-file .env.docker --profile tools run --rm test
+```
+
+Open Django shell:
+
+```bash
+docker compose --env-file .env.docker run --rm web python manage.py shell
+```
+
+Create migrations:
+
+```bash
+docker compose --env-file .env.docker run --rm web python manage.py makemigrations
+```
+
+Collect static files:
+
+```bash
+docker compose --env-file .env.docker --profile tools run --rm collectstatic
+```
+
+Stop containers:
+
+```bash
+docker compose --env-file .env.docker down
+```
+
+Stop containers and remove local volumes:
+
+```bash
+docker compose --env-file .env.docker down -v
+```
+
 Most commands should be run from the Django project directory:
 
 ```bash
@@ -64,7 +144,7 @@ curl http://127.0.0.1:8000/api/v1/ping/
 Start Redis locally:
 
 ```bash
-docker compose up -d redis
+docker compose --env-file .env.docker up -d redis
 ```
 
 Start a Celery worker:
