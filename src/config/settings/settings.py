@@ -61,6 +61,8 @@ INSTALLED_APPS = [
     "schema_viewer",
     
     # Local apps
+    "djapps.ai.apps.AiConfig",
+    "djapps.tisp.apps.TispConfig",
     "djapps.user_management.apps.UserManagementConfig",
     "djapps.datasets.apps.DatasetsConfig",
     "djapps.gateway.apps.GatewayConfig"
@@ -179,6 +181,12 @@ DATASET_ALLOWED_FILE_EXTENSIONS = tuple(
     ).split(",")
     if item.strip()
 )
+
+OPENAI_API_KEY = config("OPENAI_API_KEY", default="")
+OPENAI_MODEL = config("OPENAI_MODEL", default="gpt-4.1-mini")
+OPENAI_TIMEOUT_SECONDS = config("OPENAI_TIMEOUT_SECONDS", cast=int, default=20)
+TISP_CACHE_TTL_SECONDS = config("TISP_CACHE_TTL_SECONDS", cast=int, default=60 * 60 * 24)
+TISP_FETCH_TIMEOUT_SECONDS = config("TISP_FETCH_TIMEOUT_SECONDS", cast=int, default=20)
 
 AUTH_USER_MODEL = "user_management.User"
 

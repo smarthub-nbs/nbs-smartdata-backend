@@ -31,4 +31,6 @@ urlpatterns = [
     path(f"{prefix}/gateway/", include("djapps.gateway.urls")),
     path(f"{prefix}/developer/", include("djapps.gateway.developer_urls")),
     path(f"{prefix}/dataset/", include("djapps.datasets.urls")),
+    path(f"{prefix}/", include("djapps.ai.urls")),
+    path(f"{prefix}/", include("djapps.tisp.urls")),
 ]
