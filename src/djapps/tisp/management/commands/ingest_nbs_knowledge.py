@@ -78,11 +78,20 @@ class Command(BaseCommand):
                 endpoint=endpoint, params_hash=_hash_params(params),
                 defaults={"params": params, "response": payload, "fetched_at": timezone.now()},
             )
-            rows = payload if isinstance(payload, list) else payload.get("data", []) if isinstance(payload, dict) else []
+            rows = self._rows(payload)
             if isinstance(rows, list):
                 self._store_rows(endpoint, rows)
         self.stdout.write(f"Saved {url}")
         return True
+
+    @staticmethod
+    def _rows(payload):
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            rows = payload.get("results") or payload.get("data") or []
+            return rows if isinstance(rows, list) else []
+        return []
 
     @staticmethod
     def _store_rows(endpoint, rows):

@@ -2,6 +2,7 @@ import hashlib
 import json
 import urllib.parse
 import urllib.request
+import re
 from datetime import timedelta
 
 from django.conf import settings
@@ -178,6 +179,14 @@ def _search_stored_datavalues(query):
             | models.Q(subgroup_name__icontains=token)
             | models.Q(time_name__icontains=token)
         )
+    requested_areas = _requested_area_terms(query)
+    if requested_areas:
+        area_filter = models.Q()
+        for area in requested_areas:
+            for area_name in AREA_NAME_ALIASES.get(area, {area}):
+                area_filter |= models.Q(area_name__iexact=area_name)
+            area_filter |= models.Q(area_code__iexact=area)
+        rows = rows.filter(area_filter)
 
     grouped = {}
     for row in _prioritize_rows(list(rows[:40])):
@@ -187,11 +196,11 @@ def _search_stored_datavalues(query):
     datasets = []
     for group_rows in grouped.values():
         datasets.append(_map_rows_to_dataset(group_rows[:12]))
-    census = _search_census_records(tokens)
-    return [*census, *datasets[:10], *_search_knowledge_documents(tokens)][:20]
+    census = _search_census_records(tokens, query)
+    return [*census, *datasets[:10]][:20]
 
 
-def _search_census_records(tokens):
+def _search_census_records(tokens, query=None):
     records = CensusDataRecord.objects.all()
     for token in tokens[:6]:
         records = records.filter(
@@ -200,11 +209,53 @@ def _search_census_records(tokens):
             | models.Q(area_code__icontains=token)
             | models.Q(time_name__icontains=token)
         )
+    # Use the original query here. Short administrative qualifiers such as
+    # “CC” are intentionally omitted from the general search-token list, but
+    # they are essential when distinguishing Tanga City Council from Tanga.
+    requested_areas = _requested_area_terms(query or " ".join(tokens))
+    if requested_areas:
+        area_filter = models.Q()
+        for area in requested_areas:
+            for area_name in AREA_NAME_ALIASES.get(area, {area}):
+                area_filter |= models.Q(area_name__iexact=area_name)
+            area_filter |= models.Q(area_code__iexact=area)
+        records = records.filter(area_filter)
     rows = list(records.order_by("area_level", "area_name")[:20])
     grouped = {}
     for row in _prioritize_census_records(rows):
         grouped.setdefault((row.indicator_name, row.time_name), []).append(row)
     return [_map_census_records(group) for group in grouped.values()]
+
+
+KNOWN_AREA_NAMES = {
+    "tanzania", "mainland", "zanzibar", "arusha", "dar es salaam", "dodoma",
+    "mwanza", "mbeya", "morogoro", "tanga", "simiyu", "mara", "kigoma",
+    "kilimanjaro", "tabora", "iringa", "mtwara", "lindi", "pwani", "geita",
+    "katavi", "rukwa", "singida", "shinyanga", "kagera", "njombe",
+    "tanga mjini", "tanga city", "tanga cc", "tanga city council",
+}
+
+AREA_NAME_ALIASES = {
+    "tanga mjini": {"tanga mjini", "tanga city", "tanga municipal"},
+    "tanga city": {"tanga mjini", "tanga city", "tanga municipal"},
+    "tanga cc": {"tanga cc", "tanga city council", "tanga city", "tanga mjini"},
+    "tanga city council": {"tanga cc", "tanga city council", "tanga city", "tanga mjini"},
+}
+
+
+def _requested_area_terms(query):
+    normalized = re.sub(r"[^a-z0-9 ]+", " ", query.lower())
+    matched = [
+        area for area in sorted(KNOWN_AREA_NAMES, key=len, reverse=True)
+        if re.search(rf"(?<![a-z]){re.escape(area)}(?![a-z])", normalized)
+    ]
+    return [
+        area for area in matched
+        if not any(
+            longer != area and longer.startswith(f"{area} ")
+            for longer in matched
+        )
+    ]
 
 
 def _prioritize_census_records(rows):
