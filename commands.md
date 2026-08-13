@@ -51,6 +51,9 @@ DB_PORT=5432
 POSTGRES_PORT=5432
 REDIS_PORT=6379
 WEB_PORT=8000
+PGADMIN_PORT=5050
+PGADMIN_DEFAULT_EMAIL=admin@smarthub.local
+PGADMIN_DEFAULT_PASSWORD=change-me
 
 CELERY_BROKER_URL=redis://redis:6379/0
 CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -83,6 +86,9 @@ JWT_BLACKLIST_AFTER_ROTATION=True
 
 DRF_THROTTLE_ANON_RATE=100/hour
 DRF_THROTTLE_USER_RATE=1000/day
+DRF_THROTTLE_AUTH_CSRF_RATE=120/minute
+DRF_THROTTLE_AUTH_SENSITIVE_RATE=20/minute
+DRF_THROTTLE_AUTH_REFRESH_RATE=60/minute
 
 DATASET_MAX_UPLOAD_SIZE=52428800
 DATASET_ALLOWED_FILE_EXTENSIONS=.csv,.json,.pdf,.tsv,.txt,.xls,.xlsx,.xml,.sdmx,.zip
@@ -119,7 +125,7 @@ Open:
 http://127.0.0.1:8000/
 http://127.0.0.1:8000/admin/
 http://127.0.0.1:8000/redoc/
-http://127.0.0.1:8000/api/schema/
+http://127.0.0.1:8000/api/v1/schema/
 ```
 
 ## Docker Daily Commands
@@ -230,6 +236,28 @@ Start only PostgreSQL and Redis:
 
 ```bash
 docker compose --env-file .env.docker up -d postgres redis
+```
+
+Start pgAdmin:
+
+```bash
+docker compose --env-file .env.docker up -d pgadmin
+```
+
+Open pgAdmin:
+
+```text
+http://localhost:5050
+```
+
+Register the Docker Postgres server in pgAdmin with:
+
+```text
+Host: postgres
+Port: 5432
+Database: smarthub
+Username: smarthub
+Password: value of DB_PASSWORD from .env.docker
 ```
 
 Restart one service:

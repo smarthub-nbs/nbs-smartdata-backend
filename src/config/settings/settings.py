@@ -196,6 +196,12 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": config("DRF_THROTTLE_ANON_RATE", default="100/hour"),
         "user": config("DRF_THROTTLE_USER_RATE", default="1000/day"),
+        "auth_csrf": config("DRF_THROTTLE_AUTH_CSRF_RATE", default="120/minute"),
+        "auth_sensitive": config(
+            "DRF_THROTTLE_AUTH_SENSITIVE_RATE",
+            default="20/minute",
+        ),
+        "auth_refresh": config("DRF_THROTTLE_AUTH_REFRESH_RATE", default="60/minute"),
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "EXCEPTION_HANDLER": "config.api.exceptions.standardized_exception_handler",

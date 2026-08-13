@@ -8,7 +8,9 @@ from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from pypdf import PdfWriter
-from rest_framework.test import APIClient
+from rest_framework.request import Request
+from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.test import APIClient, APIRequestFactory
 import xlwt
 
 from .models import (
@@ -30,6 +32,7 @@ from .models import (
     Tag,
 )
 from djapps.datasets.tasks import run_bulk_upload_job
+from djapps.datasets.views import DatasetAdminBulkUploadView
 from djapps.user_management.roles import ensure_group_permissions
 
 
@@ -803,6 +806,32 @@ class DatasetWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertTrue(response.data["success"])
         self.assertEqual(DatasetBulkUploadJob.objects.count(), 1)
+
+    def test_bulk_upload_required_permissions_only_include_publish_for_true_flag(
+        self,
+    ):
+        factory = APIRequestFactory()
+        view = DatasetAdminBulkUploadView()
+
+        view.request = Request(
+            factory.post(
+                "/api/v1/dataset/admin-queue/bulk-upload/",
+                {"publish_after_upload": True},
+                format="multipart",
+            )
+        )
+        view.request.parsers = [MultiPartParser(), FormParser()]
+        self.assertIn("datasets.publish_dataset", view.required_permissions)
+
+        view.request = Request(
+            factory.post(
+                "/api/v1/dataset/admin-queue/bulk-upload/",
+                {"publish_after_upload": "false"},
+                format="multipart",
+            )
+        )
+        view.request.parsers = [MultiPartParser(), FormParser()]
+        self.assertNotIn("datasets.publish_dataset", view.required_permissions)
 
     @patch(
         "djapps.datasets.views.run_bulk_upload_job.run",

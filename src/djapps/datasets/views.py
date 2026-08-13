@@ -1073,9 +1073,13 @@ class DatasetAdminBulkUploadView(StandardizedAPIView):
             "datasets.review_dataset",
         ]
         if self.request:
+            raw_publish_after_upload = self.request.data.get(
+                "publish_after_upload",
+                False,
+            )
             try:
                 publish_after_upload = parse_optional_bool(
-                    self.request.data.get("publish_after_upload", False),
+                    raw_publish_after_upload,
                     "publish_after_upload",
                 )
             except ValidationError:
@@ -1533,7 +1537,9 @@ class DatasetBookmarkListView(DatasetBookmarkBaseView):
     )
     def get(self, request):
         paginator, page = self.paginate_queryset(self.get_queryset())
-        serializer = self.serializer_class(page, many=True, context={"request": request})
+        serializer = self.serializer_class(
+            page, many=True, context={"request": request}
+        )
         return paginator.get_paginated_response(serializer.data)
 
 
@@ -1542,27 +1548,36 @@ class DatasetBookmarkView(DatasetBaseView):
     serializer_class = DatasetBookmarkSerializer
 
     def get_base_queryset(self):
-        return Dataset.objects.select_related(
-            "publisher_user",
-            "category",
-        ).prefetch_related(
-            "metadata",
-            "dataset_tags__tag",
-            "versions__files",
-        ).filter(
-            deleted_at__isnull=True,
+        return (
+            Dataset.objects.select_related(
+                "publisher_user",
+                "category",
+            )
+            .prefetch_related(
+                "metadata",
+                "dataset_tags__tag",
+                "versions__files",
+            )
+            .filter(
+                deleted_at__isnull=True,
+            )
         )
 
     def get_bookmark(self, dataset):
-        return DatasetBookmark.objects.select_related(
-            "dataset",
-            "dataset__publisher_user",
-            "dataset__category",
-        ).prefetch_related(
-            "dataset__metadata",
-            "dataset__dataset_tags__tag",
-            "dataset__versions__files",
-        ).filter(user=self.request.user, dataset=dataset).first()
+        return (
+            DatasetBookmark.objects.select_related(
+                "dataset",
+                "dataset__publisher_user",
+                "dataset__category",
+            )
+            .prefetch_related(
+                "dataset__metadata",
+                "dataset__dataset_tags__tag",
+                "dataset__versions__files",
+            )
+            .filter(user=self.request.user, dataset=dataset)
+            .first()
+        )
 
     @extend_schema(
         tags=["Datasets"],
@@ -1629,7 +1644,9 @@ class DatasetBookmarkView(DatasetBaseView):
         dataset = get_object_or_404(self.get_base_queryset(), pk=dataset_id)
         bookmark = self.get_bookmark(dataset)
         if bookmark is None:
-            return success_response(message="Dataset removed from saved list successfully.")
+            return success_response(
+                message="Dataset removed from saved list successfully."
+            )
 
         bookmark.delete()
         return success_response(message="Dataset removed from saved list successfully.")
@@ -2755,10 +2772,16 @@ class DatasetFileView(DatasetScopedViewSet):
             or not dataset_file.is_safe
         ):
             raise ValidationError(
-                {"file": ["Chart API access is available only for validated safe files."]}
+                {
+                    "file": [
+                        "Chart API access is available only for validated safe files."
+                    ]
+                }
             )
 
-        structured_payload = build_structured_payload(dataset_file, offset=0, limit=None)
+        structured_payload = build_structured_payload(
+            dataset_file, offset=0, limit=None
+        )
         payload = {
             "file_id": dataset_file.id,
             "filename": dataset_file.filename,
