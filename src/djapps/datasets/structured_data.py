@@ -526,11 +526,12 @@ def build_pdf_payload(dataset_file, offset, limit):
 def build_json_payload(dataset_file, payload, offset, limit):
     columns, rows = build_json_rows(payload)
     page = paginate_items(rows, offset, limit)
+    sliced_rows = rows[offset:] if limit is None else rows[offset: offset + limit]
     return {
         "structure_type": "json",
         "columns": columns,
-        "rows": rows[offset: offset + limit],
-        "data": payload,
+        "rows": sliced_rows,
+        "data": sliced_rows,
         "warnings": [],
         **page,
     }

@@ -2,6 +2,8 @@ from collections import OrderedDict
 
 from rest_framework.exceptions import ValidationError
 
+from djapps.datasets.geo_tree import filter_geo_rows, parse_area_levels
+
 
 SUPPORTED_CHART_TYPES = ("bar", "pie", "line", "scatter")
 SUPPORTED_CHART_METRICS = ("count", "sum", "avg", "min", "max")
@@ -107,6 +109,10 @@ def build_dataset_chart_payload(
     metric="count",
     sort=None,
     limit=20,
+    area_level=None,
+    parent_code=None,
+    area_code_prefix=None,
+    key_field=None,
 ):
     if structured_payload.get("structure_type") == "document":
         raise ValidationError(
@@ -116,9 +122,43 @@ def build_dataset_chart_payload(
     rows = structured_payload.get("rows") or []
     columns = structured_payload.get("columns") or []
     warnings = list(structured_payload.get("warnings") or [])
+    rows = filter_geo_rows(
+        rows,
+        area_levels=parse_area_levels(area_level),
+        parent_code=parent_code,
+        area_code_prefix=area_code_prefix,
+    )
 
     if not rows:
-        raise ValidationError({"file": ["No structured rows are available for charting."]})
+        geo_filtered = bool(area_level or parent_code or area_code_prefix)
+        if not geo_filtered:
+            raise ValidationError(
+                {"file": ["No structured rows are available for charting."]}
+            )
+        dimension_field = group_by or x_field
+        warnings.append("No rows matched the geographic filter.")
+        return {
+            "file_id": dataset_file.id,
+            "filename": dataset_file.filename,
+            "file_format": dataset_file.file_format,
+            "structure_type": structured_payload.get("structure_type"),
+            "chart_type": chart_type,
+            "x_field": x_field,
+            "y_field": y_field,
+            "group_by": group_by,
+            "metric": metric,
+            "columns": columns,
+            "series": [
+                {
+                    "name": f"{metric} of {y_field}" if y_field else "count",
+                    "field": dimension_field,
+                    "points": [],
+                }
+            ],
+            "point_count": 0,
+            "source_row_count": 0,
+            "warnings": warnings,
+        }
 
     if chart_type not in SUPPORTED_CHART_TYPES:
         raise ValidationError(
@@ -195,6 +235,8 @@ def build_dataset_chart_payload(
     _validate_field(columns, dimension_field)
     if y_field:
         _validate_field(columns, y_field)
+    if key_field:
+        _validate_field(columns, key_field)
     if metric != "count" and not y_field:
         raise ValidationError(
             {"y_field": ["This field is required when using sum, avg, min, or max metrics."]}
@@ -209,24 +251,30 @@ def build_dataset_chart_payload(
                 "label": label,
                 "count": 0,
                 "values": [],
+                "key": None,
             },
         )
         bucket["count"] += 1
+        if key_field and bucket["key"] is None:
+            bucket["key"] = _normalize_label(row.get(key_field))
+            if bucket["key"] == "(blank)":
+                bucket["key"] = None
         if metric != "count":
             bucket["values"].append(_coerce_number(row.get(y_field)))
 
     points = []
     for bucket in grouped_rows.values():
         aggregated_value = bucket["count"] if metric == "count" else _aggregate_values(bucket["values"], metric)
-        points.append(
-            {
-                "label": bucket["label"],
-                "x": bucket["label"],
-                "y": aggregated_value,
-                "value": aggregated_value,
-                "count": bucket["count"],
-            }
-        )
+        point = {
+            "label": bucket["label"],
+            "x": bucket["label"],
+            "y": aggregated_value,
+            "value": aggregated_value,
+            "count": bucket["count"],
+        }
+        if key_field:
+            point["key"] = bucket["key"]
+        points.append(point)
 
     if not points:
         raise ValidationError({"detail": ["No chart points could be generated from the dataset."]})

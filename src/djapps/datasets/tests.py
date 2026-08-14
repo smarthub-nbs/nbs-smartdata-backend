@@ -1623,6 +1623,184 @@ class DatasetWorkflowTests(TestCase):
             ],
         )
 
+    def test_chart_filters_rows_by_area_level(self):
+        dataset = self.create_draft_dataset(slug="geo-chart-filter")
+        upload_response = self.upload_file(
+            dataset,
+            "population.json",
+            json.dumps(
+                [
+                    {
+                        "area_name": "Tanzania",
+                        "area_code": "TZ",
+                        "area_level": "LVL1",
+                        "data_value": 100,
+                    },
+                    {
+                        "area_name": "Dodoma",
+                        "area_code": "1",
+                        "area_level": "LVL3",
+                        "parent_code": "TZMAIN",
+                        "geo_parent_code": "TZMAIN",
+                        "data_value": 10,
+                    },
+                    {
+                        "area_name": "Mjini Magharibi",
+                        "area_code": "53",
+                        "area_level": "LVL3",
+                        "parent_code": "TZ002",
+                        "geo_parent_code": "TZ002",
+                        "data_value": 5,
+                    },
+                ]
+            ).encode("utf-8"),
+            "application/json",
+        )
+        dataset_file_id = upload_response.data["data"]["id"]
+        response = self.client.get(
+            f"/api/v1/dataset/files/{dataset_file_id}/chart/",
+            {
+                "chart_type": "bar",
+                "x_field": "area_name",
+                "y_field": "data_value",
+                "metric": "sum",
+                "area_level": "LVL3",
+                "parent_code": "TZMAIN",
+                "key_field": "area_code",
+                "limit": 40,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        points = response.data["data"]["series"][0]["points"]
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0]["label"], "Dodoma")
+        self.assertEqual(points[0]["key"], "1")
+
+    def test_chart_returns_empty_series_when_geo_filter_matches_nothing(self):
+        dataset = self.create_draft_dataset(slug="geo-chart-empty")
+        upload_response = self.upload_file(
+            dataset,
+            "population.json",
+            json.dumps(
+                [
+                    {
+                        "area_name": "Kondoa",
+                        "area_code": "10105",
+                        "area_level": "LVL5",
+                        "data_value": 10,
+                    }
+                ]
+            ).encode("utf-8"),
+            "application/json",
+        )
+        dataset_file_id = upload_response.data["data"]["id"]
+        response = self.client.get(
+            f"/api/v1/dataset/files/{dataset_file_id}/chart/",
+            {
+                "chart_type": "bar",
+                "x_field": "area_name",
+                "y_field": "data_value",
+                "metric": "sum",
+                "area_level": "LVL6",
+                "parent_code": "10105",
+                "key_field": "area_code",
+                "limit": 80,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["series"][0]["points"], [])
+
+    def test_chart_filters_localities_by_area_code_prefix(self):
+        dataset = self.create_draft_dataset(slug="geo-chart-prefix")
+        upload_response = self.upload_file(
+            dataset,
+            "population.json",
+            json.dumps(
+                [
+                    {
+                        "area_name": "Kondoa Mjini",
+                        "area_code": "10105011",
+                        "area_level": "LVL7",
+                        "data_value": 4,
+                    },
+                    {
+                        "area_name": "Ilala Mjini",
+                        "area_code": "10701011",
+                        "area_level": "LVL7",
+                        "data_value": 8,
+                    },
+                ]
+            ).encode("utf-8"),
+            "application/json",
+        )
+        dataset_file_id = upload_response.data["data"]["id"]
+        response = self.client.get(
+            f"/api/v1/dataset/files/{dataset_file_id}/chart/",
+            {
+                "chart_type": "bar",
+                "x_field": "area_name",
+                "y_field": "data_value",
+                "metric": "sum",
+                "area_level": "LVL7",
+                "area_code_prefix": "10105",
+                "key_field": "area_code",
+                "limit": 80,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        points = response.data["data"]["series"][0]["points"]
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0]["label"], "Kondoa Mjini")
+        self.assertEqual(points[0]["key"], "10105011")
+
+    def test_json_chart_loads_all_rows_when_limit_is_unbounded(self):
+        dataset = self.create_draft_dataset(slug="structured-json-chart-dataset")
+        upload_response = self.upload_file(
+            dataset,
+            "population.json",
+            json.dumps(
+                [
+                    {
+                        "indicator_name": "Population size",
+                        "area_name": "Tanzania",
+                        "area_code": "TZ",
+                        "data_value": 100,
+                    },
+                    {
+                        "indicator_name": "Population size",
+                        "area_name": "Dodoma",
+                        "area_code": "DOD",
+                        "data_value": 40,
+                    },
+                ]
+            ).encode("utf-8"),
+            "application/json",
+        )
+
+        dataset_file_id = upload_response.data["data"]["id"]
+        response = self.client.get(
+            f"/api/v1/dataset/files/{dataset_file_id}/chart/",
+            {
+                "chart_type": "bar",
+                "x_field": "area_name",
+                "y_field": "data_value",
+                "metric": "sum",
+                "sort": "desc",
+                "limit": 12,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        points = response.data["data"]["series"][0]["points"]
+        self.assertEqual(
+            [point["label"] for point in points],
+            ["Tanzania", "Dodoma"],
+        )
+        self.assertEqual([point["value"] for point in points], [100, 40])
+
     def test_structured_dataset_api_rejects_chart_generation_for_pdf(self):
         dataset = self.create_draft_dataset(slug="structured-chart-pdf-dataset")
         upload_response = self.upload_file(

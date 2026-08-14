@@ -2730,6 +2730,30 @@ class DatasetFileView(DatasetScopedViewSet):
                 description="Maximum number of chart points to return.",
                 default=20,
             ),
+            OpenApiParameter(
+                name="area_level",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Comma-separated census area levels (e.g. LVL3 or LVL1,LVL2).",
+            ),
+            OpenApiParameter(
+                name="parent_code",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Canonical parent area_code for the selected grain.",
+            ),
+            OpenApiParameter(
+                name="area_code_prefix",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Keep rows whose area_code starts with this prefix.",
+            ),
+            OpenApiParameter(
+                name="key_field",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Field copied onto each point as key (usually area_code).",
+            ),
         ],
         responses={
             200: success_response_schema(
@@ -2773,6 +2797,10 @@ class DatasetFileView(DatasetScopedViewSet):
                 metric=params.validated_data["metric"],
                 sort=params.validated_data.get("sort"),
                 limit=params.validated_data["limit"],
+                area_level=params.validated_data.get("area_level"),
+                parent_code=params.validated_data.get("parent_code"),
+                area_code_prefix=params.validated_data.get("area_code_prefix"),
+                key_field=params.validated_data.get("key_field"),
             ),
         }
 

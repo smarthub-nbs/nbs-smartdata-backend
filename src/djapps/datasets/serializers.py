@@ -809,7 +809,11 @@ class DatasetFileChartQuerySerializer(serializers.Serializer):
         choices=("asc", "desc"),
         required=False,
     )
-    limit = serializers.IntegerField(required=False, min_value=1, max_value=100, default=20)
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=200, default=20)
+    area_level = serializers.CharField(required=False, allow_blank=False)
+    parent_code = serializers.CharField(required=False, allow_blank=False)
+    area_code_prefix = serializers.CharField(required=False, allow_blank=False)
+    key_field = serializers.CharField(required=False, allow_blank=False)
 
     def validate(self, attrs):
         chart_type = attrs.get("chart_type", "bar")
@@ -843,6 +847,7 @@ class DatasetChartPointSerializer(serializers.Serializer):
     y = serializers.JSONField(read_only=True, allow_null=True, required=False)
     value = serializers.JSONField(read_only=True, allow_null=True, required=False)
     count = serializers.IntegerField(read_only=True)
+    key = serializers.CharField(read_only=True, allow_null=True, required=False)
 
 
 class DatasetChartSeriesSerializer(serializers.Serializer):
