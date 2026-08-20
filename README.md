@@ -2,6 +2,8 @@
 
 Smarthub is a Django backend for user management, dataset workflows, and public/developer gateway APIs.
 
+Settings are split into `config.settings.development`, `config.settings.test`, and `config.settings.production`. Local and Docker development default to `config.settings.development`; `manage.py test` defaults to `config.settings.test`; production should set `DJANGO_SETTINGS_MODULE=config.settings.production`.
+
 ## Project Layout
 
 - `src/` - Django project source
@@ -50,6 +52,7 @@ The repository includes a development `.env.docker`; use the command above when 
 
 - `SECRET_KEY`
 - `DEBUG`
+- `DJANGO_SETTINGS_MODULE`
 - `ALLOWED_HOSTS`
 - `DB_NAME`
 - `DB_USER`

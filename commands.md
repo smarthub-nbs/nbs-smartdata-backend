@@ -33,11 +33,31 @@ cp .env.example .env
 
 Do not commit real secrets. Keep real values in `.env` or `.env.docker`, and keep shareable placeholders in example files.
 
+## Settings Modules
+
+Settings are split by environment:
+
+```text
+config.settings.development  local and Docker development defaults
+config.settings.test         test settings
+config.settings.production   production settings
+```
+
+`manage.py` defaults to `config.settings.development`, except `python manage.py test` defaults to `config.settings.test`. Set `DJANGO_SETTINGS_MODULE` explicitly when you need a different environment:
+
+```bash
+DJANGO_SETTINGS_MODULE=config.settings.production uv run python manage.py check --deploy
+DJANGO_SETTINGS_MODULE=config.settings.test uv run python manage.py test
+```
+
+For local commands, `.env` is read by the selected settings module; use `DJANGO_SETTINGS_MODULE` in the shell or pass `--settings` when you need to switch modules.
+
 ## Required Docker Environment
 
 These values are required by `docker-compose.yml` and Django settings:
 
 ```env
+DJANGO_SETTINGS_MODULE=config.settings.development
 SECRET_KEY=change-me
 DEBUG=True
 ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0
@@ -105,6 +125,7 @@ EMAIL_VERIFICATION_TOKEN_MAX_AGE=86400
 ```
 
 For production, set cookie `SECURE=True`, use HTTPS origins, use real secrets, and do not use `DEBUG=True`.
+Set `DJANGO_SETTINGS_MODULE=config.settings.production` in the production runtime environment.
 
 ## Docker First-Time Setup
 
@@ -330,6 +351,13 @@ uv --directory src run python manage.py check
 uv --directory src run python manage.py migrate
 uv --directory src run python manage.py runserver
 uv --directory src run python manage.py test
+```
+
+Run a command with a specific settings module:
+
+```bash
+DJANGO_SETTINGS_MODULE=config.settings.production uv --directory src run python manage.py check --deploy
+DJANGO_SETTINGS_MODULE=config.settings.test uv --directory src run python manage.py test
 ```
 
 ## API Documentation
@@ -616,7 +644,7 @@ Then update `djapps/<app_name>/apps.py` so `name` is:
 name = "djapps.<app_name>"
 ```
 
-Add the app to `INSTALLED_APPS` in `src/config/settings/settings.py`.
+Add the app to `INSTALLED_APPS` in `src/config/settings/base.py`.
 
 ## Data Import And Export
 
