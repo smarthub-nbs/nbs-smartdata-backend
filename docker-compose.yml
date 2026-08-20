@@ -1,4 +1,5 @@
 x-app-environment: &app-environment
+  DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.development}
   DB_NAME: ${DB_NAME}
   DB_USER: ${DB_USER}
   DB_PASSWORD: ${DB_PASSWORD}
@@ -137,6 +138,7 @@ services:
         format: raw
     environment:
       <<: *app-environment
+      DJANGO_SETTINGS_MODULE: config.settings.test
     command: ["python", "manage.py", "test"]
     volumes:
       - ./src:/app/src
