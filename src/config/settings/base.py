@@ -4,7 +4,7 @@ Base Django settings for Smarthub.
 Environment-specific modules import from here and override only the settings
 that should differ between development, tests, and production.
 """
-import dj_database_url
+
 from datetime import timedelta
 from pathlib import Path
 
@@ -125,7 +125,6 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",
     "config.api.middleware.RequestIDMiddleware",
     "config.api.middleware.FrontendCredentialCorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
