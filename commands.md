@@ -17,6 +17,19 @@ Smarthub/
     djapps/
 ```
 
+## Run The Server
+
+If this is your first Docker run, complete [Docker First-Time Setup](#docker-first-time-setup) before using the Docker command below.
+
+Use exactly one of these commands from the repository root:
+
+| Mode | Command | Result |
+| --- | --- | --- |
+| With Docker | `docker compose --env-file .env.docker up` | Starts all normal Docker services: PostgreSQL, Redis, Django web, Celery worker, and pgAdmin. Logs stay in the terminal; press `Ctrl+C` to stop. |
+| Without Docker | `make runserver` | Runs the local Django development server at `http://127.0.0.1:8000/` using `src/` and `.env`. |
+
+Use Docker for a new developer unless you specifically need to run PostgreSQL, Redis, Django, and Celery directly on your machine.
+
 ## Environment Files
 
 Docker uses `.env.docker` from the repository root:
@@ -54,17 +67,19 @@ For local commands, `.env` is read by the selected settings module; use `DJANGO_
 
 ## Required Docker Environment
 
+Docker reads `.env.docker` from the repository root. Start from `.env.docker.example`, then set the values below deliberately.
+
 These values are required by `docker-compose.yml` and Django settings:
 
 ```env
 DJANGO_SETTINGS_MODULE=config.settings.development
-SECRET_KEY=change-me
+SECRET_KEY=dev-only-change-me
 DEBUG=True
 ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0
 
 DB_NAME=smarthub
 DB_USER=smarthub
-DB_PASSWORD=change-me
+DB_PASSWORD=smarthub
 DB_HOST=postgres
 DB_PORT=5432
 
@@ -72,8 +87,8 @@ POSTGRES_PORT=5432
 REDIS_PORT=6379
 WEB_PORT=8000
 PGADMIN_PORT=5050
-PGADMIN_DEFAULT_EMAIL=admin@smarthub.local
-PGADMIN_DEFAULT_PASSWORD=change-me
+PGADMIN_DEFAULT_EMAIL=admin@example.com
+PGADMIN_DEFAULT_PASSWORD=admin123
 
 CELERY_BROKER_URL=redis://redis:6379/0
 CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -82,7 +97,16 @@ CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:4200
 CSRF_TRUSTED_ORIGINS=http://localhost:3000,http://localhost:4200
 ```
 
-For Docker, `DB_HOST=postgres` and `redis://redis:6379/0` are correct because containers talk to each other by Compose service name.
+For Docker, keep `DB_HOST=postgres`, `DB_PORT=5432`, and `redis://redis:6379/0` exactly as shown. Those are container-internal values. If your laptop already uses a host port, change only the host-facing port variables:
+
+```env
+POSTGRES_PORT=5433
+REDIS_PORT=6380
+WEB_PORT=8001
+PGADMIN_PORT=5051
+```
+
+Use those alternate values only for ports that are actually busy. For example, if local Redis already uses `6379`, set `REDIS_PORT=6380` but keep both Celery Redis URLs on `redis://redis:6379/0`.
 
 ## Optional Environment
 
@@ -129,58 +153,128 @@ Set `DJANGO_SETTINGS_MODULE=config.settings.production` in the production runtim
 
 ## Docker First-Time Setup
 
-From the repository root:
+Run these steps from the repository root.
+
+1. Confirm Docker Desktop or Docker Engine is running.
+
+2. Create the Docker environment file:
 
 ```bash
 cp .env.docker.example .env.docker
+```
+
+3. Open `.env.docker` and set the required values from [Required Docker Environment](#required-docker-environment). For local development, these values are enough:
+
+```env
+SECRET_KEY=dev-only-change-me
+DB_PASSWORD=smarthub
+PGADMIN_DEFAULT_EMAIL=admin@example.com
+PGADMIN_DEFAULT_PASSWORD=admin123
+```
+
+4. If your machine already runs Redis on port `6379`, set this in `.env.docker`:
+
+```env
+REDIS_PORT=6380
+```
+
+5. Build the Django image:
+
+```bash
 docker compose --env-file .env.docker build
-docker compose --env-file .env.docker up -d web celery_worker
+```
+
+6. Create the database tables:
+
+```bash
 docker compose --env-file .env.docker --profile tools run --rm migrate
+```
+
+7. Seed roles and permissions:
+
+```bash
 docker compose --env-file .env.docker run --rm web python manage.py seed_roles
+```
+
+8. Create a Django admin user:
+
+```bash
 docker compose --env-file .env.docker run --rm web python manage.py createsuperuser
+```
+
+9. Start all normal Docker services:
+
+```bash
+docker compose --env-file .env.docker up
 ```
 
 Open:
 
 ```text
-http://127.0.0.1:8000/
-http://127.0.0.1:8000/admin/
-http://127.0.0.1:8000/redoc/
-http://127.0.0.1:8000/api/v1/schema/
+Django API docs:  http://127.0.0.1:8000/
+Django admin:     http://127.0.0.1:8000/admin/
+ReDoc:            http://127.0.0.1:8000/redoc/
+OpenAPI schema:   http://127.0.0.1:8000/api/v1/schema/
+pgAdmin:          http://localhost:5050
 ```
+
+The `docker compose --env-file .env.docker up` command starts the long-running services only. It does not run migrations, seed roles, create users, run tests, or collect static files.
 
 ## Docker Daily Commands
 
-Start Django and Celery:
+### Start all normal services in the foreground
 
 ```bash
-docker compose --env-file .env.docker up -d web celery_worker
+docker compose --env-file .env.docker up
 ```
 
-View logs:
+### Start all normal services in the background
+
+```bash
+docker compose --env-file .env.docker up -d
+```
+
+### Check container status
+
+```bash
+docker compose --env-file .env.docker ps
+```
+
+### Run migrations after pulling new code
+
+```bash
+docker compose --env-file .env.docker --profile tools run --rm migrate
+```
+
+### View logs
 
 ```bash
 docker compose --env-file .env.docker logs -f web
 docker compose --env-file .env.docker logs -f celery_worker
 ```
 
-Stop services:
+### Stop services
 
 ```bash
 docker compose --env-file .env.docker down
 ```
 
-Stop services and remove local database, Redis, media, and static volumes:
+### Stop services and remove local database, Redis, media, and static volumes
 
 ```bash
 docker compose --env-file .env.docker down -v
 ```
 
-Rebuild after dependency or Dockerfile changes:
+### Rebuild after dependency or Dockerfile changes
 
 ```bash
 docker compose --env-file .env.docker build
-docker compose --env-file .env.docker up -d web celery_worker
+```
+
+### After rebuilding, start the stack again
+
+```bash
+docker compose --env-file .env.docker up
 ```
 
 ## Docker Django Commands
@@ -241,28 +335,34 @@ docker compose --env-file .env.docker run --rm web python manage.py spectacular 
 
 ## Docker Services
 
-`docker-compose.yml` defines these services:
+`docker-compose.yml` defines these long-running services:
 
 ```text
 postgres       PostgreSQL database
 redis          Redis broker/result backend
 web            Django development server
 celery_worker  Celery worker for background tasks
+pgadmin        Browser UI for inspecting PostgreSQL
+```
+
+It also defines these one-off tool services behind the `tools` profile:
+
+```text
 migrate        One-off migration runner, profile: tools
 test           One-off test runner, profile: tools
 collectstatic  One-off static file collector, profile: tools
 ```
 
-Start only PostgreSQL and Redis:
+Start all long-running services:
+
+```bash
+docker compose --env-file .env.docker up
+```
+
+Start only PostgreSQL and Redis for local non-Docker Django development:
 
 ```bash
 docker compose --env-file .env.docker up -d postgres redis
-```
-
-Start pgAdmin:
-
-```bash
-docker compose --env-file .env.docker up -d pgadmin
 ```
 
 Open pgAdmin:
@@ -271,14 +371,34 @@ Open pgAdmin:
 http://localhost:5050
 ```
 
-Register the Docker Postgres server in pgAdmin with:
+Log in to pgAdmin with the values from `.env.docker`:
 
 ```text
-Host: postgres
-Port: 5432
-Database: smarthub
-Username: smarthub
-Password: value of DB_PASSWORD from .env.docker
+Email:    value of PGADMIN_DEFAULT_EMAIL
+Password: value of PGADMIN_DEFAULT_PASSWORD
+```
+
+Register the Docker Postgres server in pgAdmin:
+
+```text
+General > Name:                    Smarthub Docker
+Connection > Host name/address:    postgres
+Connection > Port:                 5432
+Connection > Maintenance database: smarthub
+Connection > Username:             smarthub
+Connection > Password:             value of DB_PASSWORD from .env.docker
+```
+
+View tables in pgAdmin:
+
+```text
+Servers > Smarthub Docker > Databases > smarthub > Schemas > public > Tables
+```
+
+If pgAdmin shows no tables, run migrations and refresh `Tables`:
+
+```bash
+docker compose --env-file .env.docker --profile tools run --rm migrate
 ```
 
 Restart one service:
@@ -317,8 +437,9 @@ uv run python manage.py check
 uv run python manage.py migrate
 uv run python manage.py seed_roles
 uv run python manage.py createsuperuser
-uv run python manage.py runserver
 ```
+
+Run the Django server without Docker by using the non-Docker command in [Run The Server](#run-the-server).
 
 Start Celery in another terminal from `src/`:
 
@@ -339,7 +460,6 @@ Run from `src/`:
 ```bash
 uv run python manage.py check
 uv run python manage.py migrate
-uv run python manage.py runserver
 uv run celery -A config worker -l info
 ```
 
@@ -349,9 +469,10 @@ Run from the repository root with `uv --directory src`:
 uv --directory src sync
 uv --directory src run python manage.py check
 uv --directory src run python manage.py migrate
-uv --directory src run python manage.py runserver
 uv --directory src run python manage.py test
 ```
+
+Run the Django server without Docker by using the non-Docker command in [Run The Server](#run-the-server).
 
 Run a command with a specific settings module:
 
@@ -373,7 +494,7 @@ Browsable docs while the server is running:
 ```text
 http://127.0.0.1:8000/
 http://127.0.0.1:8000/redoc/
-http://127.0.0.1:8000/api/schema/
+http://127.0.0.1:8000/api/v1/schema/
 ```
 
 Smoke-test the public ping endpoint:
