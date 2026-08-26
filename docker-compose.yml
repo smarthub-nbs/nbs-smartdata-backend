@@ -1,4 +1,5 @@
 x-app-environment: &app-environment
+  DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.development}
   DB_NAME: ${DB_NAME}
   DB_USER: ${DB_USER}
   DB_PASSWORD: ${DB_PASSWORD}
@@ -88,6 +89,20 @@ services:
       redis:
         condition: service_healthy
 
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: smarthub-pgadmin
+    ports:
+      - "${PGADMIN_PORT}:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   migrate:
     build:
       context: .
@@ -123,6 +138,7 @@ services:
         format: raw
     environment:
       <<: *app-environment
+      DJANGO_SETTINGS_MODULE: config.settings.test
     command: ["python", "manage.py", "test"]
     volumes:
       - ./src:/app/src
@@ -161,6 +177,7 @@ services:
 
 volumes:
   postgres_data:
+  pgadmin_data:
   redis_data:
   media_data:
   static_data:

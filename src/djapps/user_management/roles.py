@@ -28,6 +28,12 @@ DATASET_EDITOR_PERMISSIONS = (
     "datasets.delete_dataset",
 )
 
+DATASET_EDITOR_REQUIRED_PERMISSIONS = tuple(
+    permission
+    for permission in DATASET_EDITOR_PERMISSIONS
+    if permission != "datasets.view_dataset"
+)
+
 DATASET_ADMIN_PERMISSIONS = (
     "datasets.view_dataset",
     "datasets.view_all_dataset",
@@ -36,6 +42,12 @@ DATASET_ADMIN_PERMISSIONS = (
     "datasets.delete_dataset",
     "datasets.review_dataset",
     "datasets.publish_dataset",
+)
+
+DATASET_ADMIN_REQUIRED_PERMISSIONS = tuple(
+    permission
+    for permission in DATASET_ADMIN_PERMISSIONS
+    if permission != "datasets.view_dataset"
 )
 
 DATASET_TAXONOMY_ADMIN_PERMISSIONS = (

@@ -53,7 +53,10 @@ def can_change_dataset(user, dataset):
         and user.has_perm("datasets.change_dataset")
         and (
             has_dataset_admin_access(user)
-            or (is_owner(user, dataset) and dataset.status in {DatasetStatus.DRAFT, DatasetStatus.REJECTED})
+            or (
+                is_owner(user, dataset)
+                and dataset.status in {DatasetStatus.DRAFT, DatasetStatus.REJECTED}
+            )
         )
     )
 
@@ -67,28 +70,34 @@ def can_delete_dataset(user, dataset):
         and user.has_perm("datasets.delete_dataset")
         and (
             has_dataset_admin_access(user)
-            or (is_owner(user, dataset) and dataset.status in {DatasetStatus.DRAFT, DatasetStatus.REJECTED})
+            or (
+                is_owner(user, dataset)
+                and dataset.status in {DatasetStatus.DRAFT, DatasetStatus.REJECTED}
+            )
         )
     )
 
 
 def can_restore_dataset(user, dataset):
+    if not is_dataset_deleted(dataset):
+        return False
     return bool(
         user
         and user.is_authenticated
         and user.has_perm("datasets.delete_dataset")
         and (
             has_dataset_admin_access(user)
-            or (is_owner(user, dataset) and dataset.status in {DatasetStatus.DRAFT, DatasetStatus.REJECTED})
+            or (
+                is_owner(user, dataset)
+                and dataset.status in {DatasetStatus.DRAFT, DatasetStatus.REJECTED}
+            )
         )
     )
 
 
 def can_review_dataset(user):
     return bool(
-        user
-        and user.is_authenticated
-        and user.has_perm("datasets.review_dataset")
+        user and user.is_authenticated and user.has_perm("datasets.review_dataset")
     )
 
 

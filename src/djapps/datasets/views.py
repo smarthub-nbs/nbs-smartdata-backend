@@ -1073,9 +1073,13 @@ class DatasetAdminBulkUploadView(StandardizedAPIView):
             "datasets.review_dataset",
         ]
         if self.request:
+            raw_publish_after_upload = self.request.data.get(
+                "publish_after_upload",
+                False,
+            )
             try:
                 publish_after_upload = parse_optional_bool(
-                    self.request.data.get("publish_after_upload", False),
+                    raw_publish_after_upload,
                     "publish_after_upload",
                 )
             except ValidationError:
@@ -1533,7 +1537,9 @@ class DatasetBookmarkListView(DatasetBookmarkBaseView):
     )
     def get(self, request):
         paginator, page = self.paginate_queryset(self.get_queryset())
-        serializer = self.serializer_class(page, many=True, context={"request": request})
+        serializer = self.serializer_class(
+            page, many=True, context={"request": request}
+        )
         return paginator.get_paginated_response(serializer.data)
 
 
@@ -1542,27 +1548,36 @@ class DatasetBookmarkView(DatasetBaseView):
     serializer_class = DatasetBookmarkSerializer
 
     def get_base_queryset(self):
-        return Dataset.objects.select_related(
-            "publisher_user",
-            "category",
-        ).prefetch_related(
-            "metadata",
-            "dataset_tags__tag",
-            "versions__files",
-        ).filter(
-            deleted_at__isnull=True,
+        return (
+            Dataset.objects.select_related(
+                "publisher_user",
+                "category",
+            )
+            .prefetch_related(
+                "metadata",
+                "dataset_tags__tag",
+                "versions__files",
+            )
+            .filter(
+                deleted_at__isnull=True,
+            )
         )
 
     def get_bookmark(self, dataset):
-        return DatasetBookmark.objects.select_related(
-            "dataset",
-            "dataset__publisher_user",
-            "dataset__category",
-        ).prefetch_related(
-            "dataset__metadata",
-            "dataset__dataset_tags__tag",
-            "dataset__versions__files",
-        ).filter(user=self.request.user, dataset=dataset).first()
+        return (
+            DatasetBookmark.objects.select_related(
+                "dataset",
+                "dataset__publisher_user",
+                "dataset__category",
+            )
+            .prefetch_related(
+                "dataset__metadata",
+                "dataset__dataset_tags__tag",
+                "dataset__versions__files",
+            )
+            .filter(user=self.request.user, dataset=dataset)
+            .first()
+        )
 
     @extend_schema(
         tags=["Datasets"],
@@ -1629,7 +1644,9 @@ class DatasetBookmarkView(DatasetBaseView):
         dataset = get_object_or_404(self.get_base_queryset(), pk=dataset_id)
         bookmark = self.get_bookmark(dataset)
         if bookmark is None:
-            return success_response(message="Dataset removed from saved list successfully.")
+            return success_response(
+                message="Dataset removed from saved list successfully."
+            )
 
         bookmark.delete()
         return success_response(message="Dataset removed from saved list successfully.")
@@ -2730,6 +2747,30 @@ class DatasetFileView(DatasetScopedViewSet):
                 description="Maximum number of chart points to return.",
                 default=20,
             ),
+            OpenApiParameter(
+                name="area_level",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Comma-separated census area levels (e.g. LVL3 or LVL1,LVL2).",
+            ),
+            OpenApiParameter(
+                name="parent_code",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Canonical parent area_code for the selected grain.",
+            ),
+            OpenApiParameter(
+                name="area_code_prefix",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Keep rows whose area_code starts with this prefix.",
+            ),
+            OpenApiParameter(
+                name="key_field",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description="Field copied onto each point as key (usually area_code).",
+            ),
         ],
         responses={
             200: success_response_schema(
@@ -2755,10 +2796,16 @@ class DatasetFileView(DatasetScopedViewSet):
             or not dataset_file.is_safe
         ):
             raise ValidationError(
-                {"file": ["Chart API access is available only for validated safe files."]}
+                {
+                    "file": [
+                        "Chart API access is available only for validated safe files."
+                    ]
+                }
             )
 
-        structured_payload = build_structured_payload(dataset_file, offset=0, limit=None)
+        structured_payload = build_structured_payload(
+            dataset_file, offset=0, limit=None
+        )
         payload = {
             "file_id": dataset_file.id,
             "filename": dataset_file.filename,
@@ -2773,6 +2820,10 @@ class DatasetFileView(DatasetScopedViewSet):
                 metric=params.validated_data["metric"],
                 sort=params.validated_data.get("sort"),
                 limit=params.validated_data["limit"],
+                area_level=params.validated_data.get("area_level"),
+                parent_code=params.validated_data.get("parent_code"),
+                area_code_prefix=params.validated_data.get("area_code_prefix"),
+                key_field=params.validated_data.get("key_field"),
             ),
         }
 

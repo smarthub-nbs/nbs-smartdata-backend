@@ -2,7 +2,7 @@ import re
 import uuid
 from unittest.mock import MagicMock, patch
 
-from django.contrib.auth.models import Group
+from django.contrib.auth.models import Group, Permission
 from django.conf import settings
 from django.core import mail
 from django.core.exceptions import ValidationError
@@ -12,7 +12,12 @@ from djapps.datasets.models import Category, Dataset, DatasetAuditLog, DatasetSt
 from djapps.gateway.models import APIConsumer, APIUsageLog
 from djapps.gateway.services import issue_api_key
 from .models import User
-from .roles import ensure_group_permissions
+from .roles import (
+    DATASET_ADMIN_REQUIRED_PERMISSIONS,
+    DATASET_EDITOR_REQUIRED_PERMISSIONS,
+    ensure_group_permissions,
+    sync_user_groups,
+)
 
 
 def assert_access_cookie_set(test_case, response):
@@ -71,6 +76,29 @@ def assert_auth_cookies_cleared(test_case, response):
         str(response.cookies[settings.AUTH_REFRESH_COOKIE_NAME]["max-age"]),
         "0",
     )
+
+
+class PermissionRoleTests(TestCase):
+    def test_derived_permission_sets_exclude_view_dataset_by_name(self):
+        self.assertEqual(
+            DATASET_EDITOR_REQUIRED_PERMISSIONS,
+            (
+                "datasets.add_dataset",
+                "datasets.change_dataset",
+                "datasets.delete_dataset",
+            ),
+        )
+        self.assertEqual(
+            DATASET_ADMIN_REQUIRED_PERMISSIONS,
+            (
+                "datasets.view_all_dataset",
+                "datasets.add_dataset",
+                "datasets.change_dataset",
+                "datasets.delete_dataset",
+                "datasets.review_dataset",
+                "datasets.publish_dataset",
+            ),
+        )
 
 
 class APIResponseFormatTests(TestCase):

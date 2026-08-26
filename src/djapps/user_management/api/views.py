@@ -13,7 +13,11 @@ from drf_spectacular.utils import (
     extend_schema_view,
 )
 from config.api.schema import success_response_schema, standard_error_responses
-from config.api.responses import StandardizedAPIView, StandardizedResponseMixin, success_response
+from config.api.responses import (
+    StandardizedAPIView,
+    StandardizedResponseMixin,
+    success_response,
+)
 from djapps.datasets.models import Dataset, DatasetAuditLog, DatasetStatus
 from djapps.gateway.models import APIConsumer, APIKey, APIUsageLog
 from rest_framework import status
@@ -27,8 +31,8 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from ..models import User
 from .permissions import HasAnyGroup, HasPermission
 from ..roles import (
-    DATASET_ADMIN_PERMISSIONS,
-    DATASET_EDITOR_PERMISSIONS,
+    DATASET_ADMIN_REQUIRED_PERMISSIONS,
+    DATASET_EDITOR_REQUIRED_PERMISSIONS,
     DEVELOPER_API_PERMISSIONS,
     ROLE_RESEARCHER,
     USER_ADMIN_PERMISSIONS,
@@ -83,11 +87,17 @@ from .accounts import (
     send_password_reset_email,
 )
 from .social import exchange_github_code_for_access_token, fetch_provider_json
+from .throttles import (
+    AuthCSRFCookieRateThrottle,
+    AuthRefreshRateThrottle,
+    AuthSensitiveRateThrottle,
+)
 from utils.pagination import CustomPagination
 from utils.query import parse_optional_bool
 
-
-ADMIN_REQUIRED_PERMISSIONS = DATASET_ADMIN_PERMISSIONS[1:] + USER_ADMIN_PERMISSIONS
+ADMIN_REQUIRED_PERMISSIONS = (
+    DATASET_ADMIN_REQUIRED_PERMISSIONS + USER_ADMIN_PERMISSIONS
+)
 ADMIN_ANALYTICS_PERMISSIONS = ADMIN_REQUIRED_PERMISSIONS + (
     "gateway.view_apiconsumer",
     "gateway.view_apikey",
@@ -192,6 +202,7 @@ def _serialize_top_dataset_counts(rows):
 
 
 def _serialize_dataset_activity(log):
+    dataset_slug = getattr(log.dataset, "slug", None)
     return {
         "id": str(log.id),
         "activity_type": "dataset_audit",
@@ -199,20 +210,24 @@ def _serialize_dataset_activity(log):
         "created_at": log.created_at,
         "actor_email": getattr(log.actor, "email", None),
         "dataset_id": str(log.dataset_id) if log.dataset_id else None,
-        "dataset_slug": getattr(log.dataset, "slug", None),
+        "dataset_slug": dataset_slug,
         "target_model": log.target_model,
         "target_id": str(log.target_id) if log.target_id else None,
         "endpoint": None,
         "method": None,
         "status_code": None,
-        "summary": f"{log.action} on {log.dataset.slug}",
+        "summary": (f"{log.action} on {dataset_slug}" if dataset_slug else log.action),
         "details": log.details or {},
     }
 
 
 def _serialize_api_usage_activity(log, dataset_slug_map):
     actor_email = None
-    if log.consumer_id and log.consumer is not None and getattr(log.consumer, "user", None):
+    if (
+        log.consumer_id
+        and log.consumer is not None
+        and getattr(log.consumer, "user", None)
+    ):
         actor_email = log.consumer.user.email
 
     return {
@@ -299,6 +314,7 @@ def _social_login_response(request, user):
 class CSRFCookieAPIView(StandardizedAPIView):
     permission_classes = [AllowAny]
     serializer_class = CSRFTokenSerializer
+    throttle_classes = [AuthCSRFCookieRateThrottle]
 
     @extend_schema(
         tags=["Authentication"],
@@ -330,6 +346,7 @@ class CSRFCookieAPIView(StandardizedAPIView):
 class RegisterAPIView(StandardizedAPIView):
     permission_classes = [AllowAny]
     serializer_class = RegisterSerializer
+    throttle_classes = [AuthSensitiveRateThrottle]
 
     @extend_schema(
         tags=["Authentication"],
@@ -429,6 +446,7 @@ class RegisterAPIView(StandardizedAPIView):
 class LoginAPIView(StandardizedResponseMixin, TokenObtainPairView):
     permission_classes = [AllowAny]
     serializer_class = EmailTokenObtainPairSerializer
+    throttle_classes = [AuthSensitiveRateThrottle]
     success_message = "Login successful."
 
     def post(self, request, *args, **kwargs):
@@ -479,6 +497,7 @@ class LoginAPIView(StandardizedResponseMixin, TokenObtainPairView):
 class RefreshAPIView(StandardizedResponseMixin, TokenRefreshView):
     permission_classes = [AllowAny]
     serializer_class = VersionedTokenRefreshSerializer
+    throttle_classes = [AuthRefreshRateThrottle]
     success_message = "Token refreshed successfully."
 
     def post(self, request, *args, **kwargs):
@@ -551,6 +570,7 @@ class LogoutAPIView(StandardizedAPIView):
 class GoogleSocialLoginAPIView(StandardizedAPIView):
     permission_classes = [AllowAny]
     serializer_class = SocialLoginSerializer
+    throttle_classes = [AuthSensitiveRateThrottle]
 
     @extend_schema(
         tags=["Authentication"],
@@ -596,7 +616,9 @@ class GoogleSocialLoginAPIView(StandardizedAPIView):
             serializer.validated_data["access_token"],
         )
         if not isinstance(profile, dict):
-            raise ValidationError({"access_token": ["Invalid Google profile response."]})
+            raise ValidationError(
+                {"access_token": ["Invalid Google profile response."]}
+            )
 
         email = profile.get("email")
         if not email or not profile.get("email_verified"):
@@ -616,6 +638,7 @@ class GoogleSocialLoginAPIView(StandardizedAPIView):
 class GitHubSocialLoginAPIView(StandardizedAPIView):
     permission_classes = [AllowAny]
     serializer_class = GitHubOAuthCodeExchangeSerializer
+    throttle_classes = [AuthSensitiveRateThrottle]
 
     @extend_schema(
         tags=["Authentication"],
@@ -839,7 +862,7 @@ class RegisteredUserAPIView(StandardizedAPIView):
 
 class EditorAPIView(StandardizedAPIView):
     permission_classes = [HasPermission]
-    required_permissions = DATASET_EDITOR_PERMISSIONS[1:]
+    required_permissions = DATASET_EDITOR_REQUIRED_PERMISSIONS
     serializer_class = StatusResponseSerializer
 
     @extend_schema(
@@ -1100,7 +1123,9 @@ class AdminDashboardSummaryAPIView(AdminAnalyticsBaseAPIView):
             "api_keys_revoked": APIKey.objects.filter(status="revoked").count(),
             "api_keys_expired": APIKey.objects.filter(status="expired").count(),
             "requests_total": APIUsageLog.objects.count(),
-            "requests_last_24h": APIUsageLog.objects.filter(created_at__gte=last_24h).count(),
+            "requests_last_24h": APIUsageLog.objects.filter(
+                created_at__gte=last_24h
+            ).count(),
             "error_requests_last_24h": APIUsageLog.objects.filter(
                 created_at__gte=last_24h,
                 status_code__gte=400,
@@ -1186,7 +1211,9 @@ class AdminDashboardAPICallsSummaryAPIView(AdminAnalyticsBaseAPIView):
                 request_count=Count("id"),
                 error_count=Count("id", filter=Q(status_code__gte=400)),
             )
-            .order_by("-request_count", "endpoint", "method")[:ADMIN_ANALYTICS_TOP_LIMIT]
+            .order_by("-request_count", "endpoint", "method")[
+                :ADMIN_ANALYTICS_TOP_LIMIT
+            ]
         )
 
         serializer = self.serializer_class(
@@ -1383,15 +1410,23 @@ class AdminDashboardDatasetActivitySummaryAPIView(AdminAnalyticsBaseAPIView):
     )
     def get(self, request):
         days, start_date = self.get_analytics_window()
-        queryset = DatasetAuditLog.objects.select_related("dataset").filter(
-            created_at__date__gte=start_date,
-        ).exclude(action__in=DATASET_ACTIVITY_EXCLUDED_ACTIONS)
+        queryset = (
+            DatasetAuditLog.objects.select_related("dataset")
+            .filter(
+                created_at__date__gte=start_date,
+            )
+            .exclude(action__in=DATASET_ACTIVITY_EXCLUDED_ACTIONS)
+        )
 
         totals = {
             "total_events": queryset.count(),
             "unique_datasets": queryset.values("dataset_id").distinct().count(),
-            "dataset_events": queryset.filter(action__in=DATASET_RECORD_ACTIONS).count(),
-            "workflow_events": queryset.filter(action__in=DATASET_WORKFLOW_ACTIONS).count(),
+            "dataset_events": queryset.filter(
+                action__in=DATASET_RECORD_ACTIONS
+            ).count(),
+            "workflow_events": queryset.filter(
+                action__in=DATASET_WORKFLOW_ACTIONS
+            ).count(),
             "file_events": queryset.filter(action__startswith="file_").count(),
             "metadata_events": queryset.filter(action__startswith="metadata_").count(),
             "tag_events": queryset.filter(action__startswith="tag_").count(),
@@ -1494,7 +1529,9 @@ class PasswordChangeAPIView(StandardizedAPIView):
 
         current_password = serializer.validated_data["current_password"]
         if not request.user.check_password(current_password):
-            raise ValidationError({"current_password": ["Current password is incorrect."]})
+            raise ValidationError(
+                {"current_password": ["Current password is incorrect."]}
+            )
 
         request.user.set_password(serializer.validated_data["new_password"])
         request.user.save(update_fields=["password"])
@@ -1508,6 +1545,7 @@ class PasswordChangeAPIView(StandardizedAPIView):
 class PasswordResetRequestAPIView(StandardizedAPIView):
     permission_classes = [AllowAny]
     serializer_class = PasswordResetRequestSerializer
+    throttle_classes = [AuthSensitiveRateThrottle]
 
     @extend_schema(
         tags=["Authentication"],
@@ -1546,6 +1584,7 @@ class PasswordResetRequestAPIView(StandardizedAPIView):
 class PasswordResetConfirmAPIView(StandardizedAPIView):
     permission_classes = [AllowAny]
     serializer_class = PasswordResetConfirmSerializer
+    throttle_classes = [AuthSensitiveRateThrottle]
 
     @extend_schema(
         tags=["Authentication"],
@@ -1622,6 +1661,7 @@ class EmailVerificationRequestAPIView(StandardizedAPIView):
 class EmailVerificationConfirmAPIView(StandardizedAPIView):
     permission_classes = [AllowAny]
     serializer_class = EmailVerificationConfirmSerializer
+    throttle_classes = [AuthSensitiveRateThrottle]
 
     @extend_schema(
         tags=["Authentication"],
@@ -1664,7 +1704,9 @@ class UserManagementBaseAPIView(StandardizedAPIView):
     pagination_class = CustomPagination
 
     def get_base_queryset(self):
-        return User.objects.prefetch_related("groups", "user_permissions").order_by("email")
+        return User.objects.prefetch_related("groups", "user_permissions").order_by(
+            "email"
+        )
 
     def get_user(self, user_id):
         return get_object_or_404(self.get_base_queryset(), pk=user_id)
