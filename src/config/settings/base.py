@@ -329,17 +329,36 @@ CORS_PREFLIGHT_MAX_AGE = config(
     default=86400,
 )
 
+
+SESSION_COOKIE_SECURE = config(
+    "SESSION_COOKIE_SECURE",
+    cast=bool,
+    default=True,
+)
+SESSION_COOKIE_SAMESITE = config(
+    "SESSION_COOKIE_SAMESITE",
+    default=AUTH_REFRESH_COOKIE_SAMESITE,
+)
+
 CONFIGURED_CSRF_TRUSTED_ORIGINS = configured_tuple("CSRF_TRUSTED_ORIGINS")
 CSRF_TRUSTED_ORIGINS = build_csrf_trusted_origins(DEBUG, CORS_ALLOWED_ORIGINS)
 CSRF_COOKIE_NAME = config("CSRF_COOKIE_NAME", default="csrftoken")
-CSRF_COOKIE_SECURE = True
-CSRF_COOKIE_HTTPONLY = False
+CSRF_COOKIE_SECURE = config(
+    "CSRF_COOKIE_SECURE",
+    cast=bool,
+    default=True,
+)
+CSRF_COOKIE_HTTPONLY = config(
+    "CSRF_COOKIE_HTTPONLY",
+    cast=bool,
+    default=False,
+)
 CSRF_COOKIE_SAMESITE = normalize_samesite(
     config("CSRF_COOKIE_SAMESITE", default=AUTH_REFRESH_COOKIE_SAMESITE)
 )
 CSRF_COOKIE_PATH = config(
     "CSRF_COOKIE_PATH",
-    default=AUTH_ACCESS_COOKIE_PATH,
+    default="/",
 )
 CSRF_COOKIE_DOMAIN = (
     config("CSRF_COOKIE_DOMAIN", default="").strip() or AUTH_REFRESH_COOKIE_DOMAIN
