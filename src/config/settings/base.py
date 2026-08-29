@@ -9,6 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from decouple import Csv, config
+from django.urls import reverse_lazy
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -107,6 +108,7 @@ ALLOWED_HOSTS = config(
 INSTALLED_APPS = [
     "corsheaders",
     "unfold",
+    "unfold.contrib.filters",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -143,7 +145,7 @@ ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -510,7 +512,200 @@ SPECTACULAR_SETTINGS = {
 }
 
 UNFOLD = {
-    "SITE_TITLE": "smarthub",
-    "SITE_HEADER": "SMARTHUB ADMIN PANEL",
-    "SITE_SUBHEADER": "Admin panel for Smarthub",
+    "SITE_TITLE": "Smarthub Admin",
+    "SITE_HEADER": "Smarthub",
+    "SITE_SUBHEADER": "Data management and API administration",
+    "SITE_SYMBOL": "database",
+    "SITE_URL": "/",
+    "SHOW_HISTORY": True,
+    "SHOW_VIEW_ON_SITE": False,
+    "SHOW_BACK_BUTTON": True,
+    "ENVIRONMENT": "config.admin.environment_callback",
+    "ENVIRONMENT_TITLE_PREFIX": "config.admin.environment_title_prefix_callback",
+    "DASHBOARD_CALLBACK": "config.admin.dashboard_callback",
+    "COMMAND": {
+        "search_models": [
+            "datasets.dataset",
+            "datasets.datasetmetadata",
+            "datasets.datasetfile",
+            "user_management.user",
+            "gateway.apiconsumer",
+            "gateway.apikey",
+        ],
+        "show_history": True,
+    },
+    "SIDEBAR": {
+        "show_search": True,
+        "show_all_applications": True,
+        "navigation": [
+            {
+                "title": "Accounts",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Users",
+                        "icon": "group",
+                        "link": reverse_lazy(
+                            "admin:user_management_user_changelist"
+                        ),
+                    },
+                    {
+                        "title": "Groups",
+                        "icon": "admin_panel_settings",
+                        "link": reverse_lazy("admin:auth_group_changelist"),
+                    },
+                ],
+            },
+            {
+                "title": "Datasets",
+                "separator": True,
+                "collapsible": False,
+                "items": [
+                    {
+                        "title": "Datasets",
+                        "icon": "database",
+                        "link": reverse_lazy("admin:datasets_dataset_changelist"),
+                    },
+                    {
+                        "title": "Metadata",
+                        "icon": "description",
+                        "link": reverse_lazy(
+                            "admin:datasets_datasetmetadata_changelist"
+                        ),
+                    },
+                    {
+                        "title": "Files",
+                        "icon": "upload_file",
+                        "link": reverse_lazy("admin:datasets_datasetfile_changelist"),
+                    },
+                    {
+                        "title": "Categories",
+                        "icon": "category",
+                        "link": reverse_lazy("admin:datasets_category_changelist"),
+                    },
+                    {
+                        "title": "Tags",
+                        "icon": "sell",
+                        "link": reverse_lazy("admin:datasets_tag_changelist"),
+                    },
+                    {
+                        "title": "Regions",
+                        "icon": "public",
+                        "link": reverse_lazy("admin:datasets_region_changelist"),
+                    },
+                    {
+                        "title": "Bookmarks",
+                        "icon": "bookmark",
+                        "link": reverse_lazy(
+                            "admin:datasets_datasetbookmark_changelist"
+                        ),
+                    },
+                ],
+            },
+            {
+                "title": "Dataset Operations",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Bulk Action Jobs",
+                        "icon": "playlist_add_check",
+                        "link": reverse_lazy(
+                            "admin:datasets_datasetbulkactionjob_changelist"
+                        ),
+                    },
+                    {
+                        "title": "Bulk Upload Jobs",
+                        "icon": "cloud_upload",
+                        "link": reverse_lazy(
+                            "admin:datasets_datasetbulkuploadjob_changelist"
+                        ),
+                    },
+                    {
+                        "title": "Upload Job Items",
+                        "icon": "fact_check",
+                        "link": reverse_lazy(
+                            "admin:datasets_datasetbulkuploadjobitem_changelist"
+                        ),
+                    },
+                    {
+                        "title": "Status History",
+                        "icon": "history",
+                        "link": reverse_lazy(
+                            "admin:datasets_datasetstatushistory_changelist"
+                        ),
+                    },
+                    {
+                        "title": "Audit Logs",
+                        "icon": "manage_search",
+                        "link": reverse_lazy(
+                            "admin:datasets_datasetauditlog_changelist"
+                        ),
+                    },
+                    {
+                        "title": "Indexing",
+                        "icon": "sync",
+                        "link": reverse_lazy(
+                            "admin:datasets_indexingstatus_changelist"
+                        ),
+                    },
+                ],
+            },
+            {
+                "title": "Gateway",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "API Consumers",
+                        "icon": "hub",
+                        "link": reverse_lazy("admin:gateway_apiconsumer_changelist"),
+                    },
+                    {
+                        "title": "API Keys",
+                        "icon": "key",
+                        "link": reverse_lazy("admin:gateway_apikey_changelist"),
+                    },
+                    {
+                        "title": "API Scopes",
+                        "icon": "rule",
+                        "link": reverse_lazy("admin:gateway_apiscope_changelist"),
+                    },
+                    {
+                        "title": "Usage Logs",
+                        "icon": "monitoring",
+                        "link": reverse_lazy("admin:gateway_apiusagelog_changelist"),
+                    },
+                ],
+            },
+            {
+                "title": "TISP",
+                "separator": True,
+                "items": [
+                    {
+                        "title": "Data Values",
+                        "icon": "table_chart",
+                        "link": reverse_lazy("admin:tisp_tispdatavalue_changelist"),
+                    },
+                    {
+                        "title": "Census Records",
+                        "icon": "map",
+                        "link": reverse_lazy("admin:tisp_censusdatarecord_changelist"),
+                    },
+                    {
+                        "title": "Knowledge Documents",
+                        "icon": "article",
+                        "link": reverse_lazy(
+                            "admin:tisp_tispknowledgedocument_changelist"
+                        ),
+                    },
+                    {
+                        "title": "API Response Cache",
+                        "icon": "cached",
+                        "link": reverse_lazy(
+                            "admin:tisp_tispapiresponsecache_changelist"
+                        ),
+                    },
+                ],
+            },
+        ],
+    },
 }

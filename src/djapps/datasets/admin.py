@@ -1,15 +1,34 @@
 from django.contrib import admin
+from unfold.admin import ModelAdmin, StackedInline, TabularInline
+from unfold.contrib.filters.admin import (
+    AutocompleteSelectFilter,
+    BooleanRadioFilter,
+    ChoicesDropdownFilter,
+    FieldTextFilter,
+    RangeDateTimeFilter,
+    RangeNumericFilter,
+)
+from unfold.decorators import display
+from unfold.paginator import InfinitePaginator
 
 from .models import (
     Category,
     Dataset,
     DatasetAuditLog,
+    DatasetBookmark,
+    DatasetBulkActionJobStatus,
+    DatasetBulkActionJob,
+    DatasetBulkUploadJob,
+    DatasetBulkUploadJobItem,
     DatasetFile,
+    DatasetStatus,
     DatasetMetadata,
     DatasetStatusHistory,
     DatasetTag,
     DatasetVersion,
+    FileValidationStatus,
     IndexingStatus,
+    Region,
     Tag,
 )
 
@@ -26,40 +45,70 @@ class ReadOnlyAdminMixin:
         return False
 
 
-class DatasetMetadataInline(admin.StackedInline):
+class LargeTableAdminMixin:
+    paginator = InfinitePaginator
+    show_full_result_count = False
+    list_per_page = 50
+
+
+DATASET_STATUS_LABELS = {
+    DatasetStatus.DRAFT: "info",
+    DatasetStatus.IN_REVIEW: "warning",
+    DatasetStatus.APPROVED: "success",
+    DatasetStatus.REJECTED: "danger",
+    DatasetStatus.PUBLISHED: "primary",
+}
+
+FILE_VALIDATION_STATUS_LABELS = {
+    FileValidationStatus.VALIDATED: "success",
+    FileValidationStatus.REJECTED: "danger",
+}
+
+JOB_STATUS_LABELS = {
+    DatasetBulkActionJobStatus.QUEUED: "info",
+    DatasetBulkActionJobStatus.RUNNING: "warning",
+    DatasetBulkActionJobStatus.COMPLETED: "success",
+    DatasetBulkActionJobStatus.FAILED: "danger",
+}
+
+
+class DatasetMetadataInline(StackedInline):
     model = DatasetMetadata
     extra = 0
     max_num = 1
     readonly_fields = ("publisher_name", "created_at", "updated_at", "deleted_at")
 
 
-class DatasetTagInline(admin.TabularInline):
+class DatasetTagInline(TabularInline):
     model = DatasetTag
     extra = 0
     autocomplete_fields = ("tag",)
 
 
-class DatasetVersionInline(admin.TabularInline):
+class DatasetVersionInline(TabularInline):
     model = DatasetVersion
     extra = 0
+    per_page = 10
     fields = ("version_number", "created_by", "created_at")
     readonly_fields = ("created_at",)
     autocomplete_fields = ("created_by",)
     show_change_link = True
 
 
-class DatasetStatusHistoryInline(admin.TabularInline):
+class DatasetStatusHistoryInline(TabularInline):
     model = DatasetStatusHistory
     extra = 0
+    per_page = 10
     fields = ("old_status", "new_status", "changed_by", "changed_at")
     readonly_fields = ("old_status", "new_status", "reason", "changed_by", "changed_at")
     can_delete = False
     show_change_link = True
 
 
-class DatasetAuditLogInline(admin.TabularInline):
+class DatasetAuditLogInline(TabularInline):
     model = DatasetAuditLog
     extra = 0
+    per_page = 10
     fields = ("action", "actor", "target_model", "created_at")
     readonly_fields = ("action", "actor", "target_model", "target_id", "details", "created_at")
     can_delete = False
@@ -67,7 +116,7 @@ class DatasetAuditLogInline(admin.TabularInline):
 
 
 @admin.register(Category)
-class CategoryAdmin(TimestampedAdminMixin, admin.ModelAdmin):
+class CategoryAdmin(TimestampedAdminMixin, ModelAdmin):
     list_display = ("name", "slug", "created_at", "updated_at")
     search_fields = ("name", "slug")
     ordering = ("name",)
@@ -75,26 +124,41 @@ class CategoryAdmin(TimestampedAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(Tag)
-class TagAdmin(TimestampedAdminMixin, admin.ModelAdmin):
+class TagAdmin(TimestampedAdminMixin, ModelAdmin):
     list_display = ("name", "slug", "created_at", "updated_at")
     search_fields = ("name", "slug")
     ordering = ("name",)
     prepopulated_fields = {"slug": ("name",)}
 
 
+@admin.register(Region)
+class RegionAdmin(TimestampedAdminMixin, ModelAdmin):
+    list_display = ("name", "created_at", "updated_at")
+    search_fields = ("name",)
+    ordering = ("name",)
+
+
 @admin.register(Dataset)
-class DatasetAdmin(TimestampedAdminMixin, admin.ModelAdmin):
+class DatasetAdmin(TimestampedAdminMixin, ModelAdmin):
     list_display = (
         "slug",
         "publisher_user",
         "category",
-        "status",
+        "status_badge",
         "visibility",
         "published_at",
         "deleted_at",
         "created_at",
     )
-    list_filter = ("status", "visibility", "category", "published_at", "deleted_at")
+    list_filter = (
+        ("status", ChoicesDropdownFilter),
+        ("visibility", BooleanRadioFilter),
+        ("publisher_user", AutocompleteSelectFilter),
+        ("category", AutocompleteSelectFilter),
+        ("published_at", RangeDateTimeFilter),
+        ("created_at", RangeDateTimeFilter),
+        ("deleted_at", RangeDateTimeFilter),
+    )
     search_fields = (
         "slug",
         "publisher_user__email",
@@ -142,14 +206,19 @@ class DatasetAdmin(TimestampedAdminMixin, admin.ModelAdmin):
             .prefetch_related("metadata")
         )
 
+    @display(description="Status", ordering="status", label=DATASET_STATUS_LABELS)
+    def status_badge(self, obj):
+        return (obj.status, obj.get_status_display())
+
     @admin.action(description="Restore selected datasets")
     def restore_selected_datasets(self, request, queryset):
         queryset.restore()
 
 
-class DatasetFileInline(admin.TabularInline):
+class DatasetFileInline(TabularInline):
     model = DatasetFile
     extra = 0
+    per_page = 10
     fields = (
         "filename",
         "uploaded_by",
@@ -178,7 +247,7 @@ class DatasetFileInline(admin.TabularInline):
 
 
 @admin.register(DatasetVersion)
-class DatasetVersionAdmin(TimestampedAdminMixin, admin.ModelAdmin):
+class DatasetVersionAdmin(TimestampedAdminMixin, ModelAdmin):
     list_display = ("dataset", "version_number", "created_by", "created_at", "updated_at")
     list_filter = ("created_at", "deleted_at")
     search_fields = ("dataset__slug", "version_number", "created_by__email")
@@ -191,25 +260,26 @@ class DatasetVersionAdmin(TimestampedAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(DatasetFile)
-class DatasetFileAdmin(TimestampedAdminMixin, admin.ModelAdmin):
+class DatasetFileAdmin(TimestampedAdminMixin, ModelAdmin):
     list_display = (
         "filename",
         "dataset_version",
         "uploaded_by",
         "file_format",
         "file_size",
-        "validation_status",
+        "validation_status_badge",
         "is_safe",
         "is_primary",
         "created_at",
     )
     list_filter = (
-        "file_format",
-        "validation_status",
-        "is_safe",
-        "is_primary",
-        "created_at",
-        "deleted_at",
+        ("file_format", FieldTextFilter),
+        ("validation_status", ChoicesDropdownFilter),
+        ("is_safe", BooleanRadioFilter),
+        ("is_primary", BooleanRadioFilter),
+        ("uploaded_by", AutocompleteSelectFilter),
+        ("created_at", RangeDateTimeFilter),
+        ("deleted_at", RangeDateTimeFilter),
     )
     search_fields = (
         "filename",
@@ -233,20 +303,49 @@ class DatasetFileAdmin(TimestampedAdminMixin, admin.ModelAdmin):
     def get_queryset(self, request):
         return DatasetFile.objects.select_related("dataset_version__dataset", "uploaded_by")
 
+    @display(
+        description="Validation",
+        ordering="validation_status",
+        label=FILE_VALIDATION_STATUS_LABELS,
+    )
+    def validation_status_badge(self, obj):
+        return (obj.validation_status, obj.get_validation_status_display())
+
 
 @admin.register(DatasetTag)
-class DatasetTagAdmin(TimestampedAdminMixin, admin.ModelAdmin):
+class DatasetTagAdmin(TimestampedAdminMixin, ModelAdmin):
     list_display = ("dataset", "tag", "created_at")
     search_fields = ("dataset__slug", "tag__name", "tag__slug")
-    list_filter = ("tag", "created_at", "deleted_at")
+    list_filter = (
+        ("tag", AutocompleteSelectFilter),
+        ("created_at", RangeDateTimeFilter),
+        ("deleted_at", RangeDateTimeFilter),
+    )
     autocomplete_fields = ("dataset", "tag")
 
     def get_queryset(self, request):
         return DatasetTag.objects.select_related("dataset", "tag")
 
 
+@admin.register(DatasetBookmark)
+class DatasetBookmarkAdmin(TimestampedAdminMixin, ModelAdmin):
+    list_display = ("user", "dataset", "created_at")
+    list_filter = (
+        ("user", AutocompleteSelectFilter),
+        ("dataset", AutocompleteSelectFilter),
+        ("created_at", RangeDateTimeFilter),
+        ("deleted_at", RangeDateTimeFilter),
+    )
+    search_fields = ("user__email", "dataset__slug", "dataset__metadata__title")
+    autocomplete_fields = ("user", "dataset")
+    ordering = ("-created_at",)
+
+    def get_queryset(self, request):
+        return DatasetBookmark.objects.select_related("user", "dataset")
+
+
 @admin.register(DatasetMetadata)
-class DatasetMetadataAdmin(TimestampedAdminMixin, admin.ModelAdmin):
+class DatasetMetadataAdmin(TimestampedAdminMixin, ModelAdmin):
     list_display = (
         "dataset",
         "title",
@@ -256,7 +355,13 @@ class DatasetMetadataAdmin(TimestampedAdminMixin, admin.ModelAdmin):
         "year",
         "created_at",
     )
-    list_filter = ("frequency", "region", "year", "deleted_at")
+    list_filter = (
+        ("frequency", ChoicesDropdownFilter),
+        ("region", FieldTextFilter),
+        ("year", RangeNumericFilter),
+        ("created_at", RangeDateTimeFilter),
+        ("deleted_at", RangeDateTimeFilter),
+    )
     search_fields = (
         "dataset__slug",
         "title",
@@ -272,9 +377,19 @@ class DatasetMetadataAdmin(TimestampedAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(DatasetStatusHistory)
-class DatasetStatusHistoryAdmin(ReadOnlyAdminMixin, TimestampedAdminMixin, admin.ModelAdmin):
+class DatasetStatusHistoryAdmin(
+    ReadOnlyAdminMixin,
+    LargeTableAdminMixin,
+    TimestampedAdminMixin,
+    ModelAdmin,
+):
     list_display = ("dataset", "old_status", "new_status", "changed_by", "changed_at")
-    list_filter = ("old_status", "new_status", "changed_at")
+    list_filter = (
+        ("old_status", FieldTextFilter),
+        ("new_status", FieldTextFilter),
+        ("changed_by", AutocompleteSelectFilter),
+        ("changed_at", RangeDateTimeFilter),
+    )
     search_fields = ("dataset__slug", "changed_by__email", "reason")
     autocomplete_fields = ("dataset", "changed_by")
     readonly_fields = (
@@ -295,9 +410,14 @@ class DatasetStatusHistoryAdmin(ReadOnlyAdminMixin, TimestampedAdminMixin, admin
 
 
 @admin.register(IndexingStatus)
-class IndexingStatusAdmin(TimestampedAdminMixin, admin.ModelAdmin):
+class IndexingStatusAdmin(TimestampedAdminMixin, ModelAdmin):
     list_display = ("dataset", "status", "indexed_at", "created_at")
-    list_filter = ("status", "indexed_at", "deleted_at")
+    list_filter = (
+        ("status", FieldTextFilter),
+        ("dataset", AutocompleteSelectFilter),
+        ("indexed_at", RangeDateTimeFilter),
+        ("deleted_at", RangeDateTimeFilter),
+    )
     search_fields = ("dataset__slug", "status", "details")
     autocomplete_fields = ("dataset",)
     readonly_fields = ("indexed_at", "created_at", "updated_at", "deleted_at")
@@ -308,9 +428,19 @@ class IndexingStatusAdmin(TimestampedAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(DatasetAuditLog)
-class DatasetAuditLogAdmin(ReadOnlyAdminMixin, TimestampedAdminMixin, admin.ModelAdmin):
+class DatasetAuditLogAdmin(
+    ReadOnlyAdminMixin,
+    LargeTableAdminMixin,
+    TimestampedAdminMixin,
+    ModelAdmin,
+):
     list_display = ("dataset", "action", "actor", "target_model", "created_at")
-    list_filter = ("action", "target_model", "created_at")
+    list_filter = (
+        ("action", FieldTextFilter),
+        ("target_model", FieldTextFilter),
+        ("actor", AutocompleteSelectFilter),
+        ("created_at", RangeDateTimeFilter),
+    )
     search_fields = (
         "dataset__slug",
         "actor__email",
@@ -333,3 +463,191 @@ class DatasetAuditLogAdmin(ReadOnlyAdminMixin, TimestampedAdminMixin, admin.Mode
 
     def get_queryset(self, request):
         return DatasetAuditLog.objects.select_related("dataset", "actor")
+
+
+@admin.register(DatasetBulkActionJob)
+class DatasetBulkActionJobAdmin(TimestampedAdminMixin, ModelAdmin):
+    list_display = (
+        "action",
+        "status_badge",
+        "requested_by",
+        "requested_count",
+        "processed_count",
+        "failed_count",
+        "started_at",
+        "completed_at",
+        "created_at",
+    )
+    list_filter = (
+        ("action", FieldTextFilter),
+        ("status", ChoicesDropdownFilter),
+        ("requested_by", AutocompleteSelectFilter),
+        ("created_at", RangeDateTimeFilter),
+        ("started_at", RangeDateTimeFilter),
+        ("completed_at", RangeDateTimeFilter),
+    )
+    search_fields = ("requested_by__email", "request_signature", "task_id", "reason", "error")
+    autocomplete_fields = ("requested_by",)
+    readonly_fields = (
+        "task_id",
+        "requested_count",
+        "processed_count",
+        "failed_count",
+        "processed",
+        "failed",
+        "error",
+        "started_at",
+        "completed_at",
+        "created_at",
+        "updated_at",
+        "deleted_at",
+    )
+    ordering = ("-created_at",)
+
+    def get_queryset(self, request):
+        return DatasetBulkActionJob.objects.select_related("requested_by")
+
+    @display(description="Status", ordering="status", label=JOB_STATUS_LABELS)
+    def status_badge(self, obj):
+        return (obj.status, obj.get_status_display())
+
+
+class DatasetBulkUploadJobItemInline(TabularInline):
+    model = DatasetBulkUploadJobItem
+    extra = 0
+    per_page = 10
+    fields = (
+        "filename",
+        "dataset",
+        "dataset_version",
+        "status",
+        "is_primary",
+        "dataset_file",
+        "processed_at",
+        "created_at",
+    )
+    readonly_fields = (
+        "filename",
+        "dataset",
+        "dataset_version",
+        "status",
+        "result",
+        "error",
+        "dataset_file",
+        "processed_at",
+        "created_at",
+        "updated_at",
+        "deleted_at",
+    )
+    can_delete = False
+    show_change_link = True
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related(
+            "dataset",
+            "dataset_version",
+            "dataset_file",
+        )
+
+
+@admin.register(DatasetBulkUploadJob)
+class DatasetBulkUploadJobAdmin(TimestampedAdminMixin, ModelAdmin):
+    list_display = (
+        "status_badge",
+        "requested_by",
+        "total_count",
+        "processed_count",
+        "failed_count",
+        "publish_after_upload",
+        "started_at",
+        "completed_at",
+        "created_at",
+    )
+    list_filter = (
+        ("status", ChoicesDropdownFilter),
+        ("publish_after_upload", BooleanRadioFilter),
+        ("requested_by", AutocompleteSelectFilter),
+        ("created_at", RangeDateTimeFilter),
+        ("started_at", RangeDateTimeFilter),
+        ("completed_at", RangeDateTimeFilter),
+    )
+    search_fields = ("requested_by__email", "request_signature", "task_id", "reason", "error")
+    autocomplete_fields = ("requested_by",)
+    readonly_fields = (
+        "task_id",
+        "total_count",
+        "processed_count",
+        "failed_count",
+        "error",
+        "started_at",
+        "completed_at",
+        "created_at",
+        "updated_at",
+        "deleted_at",
+    )
+    ordering = ("-created_at",)
+    inlines = (DatasetBulkUploadJobItemInline,)
+
+    def get_queryset(self, request):
+        return DatasetBulkUploadJob.objects.select_related("requested_by")
+
+    @display(description="Status", ordering="status", label=JOB_STATUS_LABELS)
+    def status_badge(self, obj):
+        return (obj.status, obj.get_status_display())
+
+
+@admin.register(DatasetBulkUploadJobItem)
+class DatasetBulkUploadJobItemAdmin(
+    LargeTableAdminMixin,
+    TimestampedAdminMixin,
+    ModelAdmin,
+):
+    list_display = (
+        "filename",
+        "job",
+        "dataset",
+        "status_badge",
+        "is_primary",
+        "dataset_file",
+        "processed_at",
+        "created_at",
+    )
+    list_filter = (
+        ("status", ChoicesDropdownFilter),
+        ("is_primary", BooleanRadioFilter),
+        ("job", AutocompleteSelectFilter),
+        ("dataset", AutocompleteSelectFilter),
+        ("processed_at", RangeDateTimeFilter),
+        ("created_at", RangeDateTimeFilter),
+        ("deleted_at", RangeDateTimeFilter),
+    )
+    search_fields = (
+        "filename",
+        "job__request_signature",
+        "job__task_id",
+        "dataset__slug",
+        "dataset_file__filename",
+        "error",
+    )
+    autocomplete_fields = ("job", "dataset", "dataset_version", "dataset_file")
+    readonly_fields = (
+        "result",
+        "error",
+        "processed_at",
+        "created_at",
+        "updated_at",
+        "deleted_at",
+    )
+    ordering = ("-created_at",)
+
+    def get_queryset(self, request):
+        return DatasetBulkUploadJobItem.objects.select_related(
+            "job",
+            "dataset",
+            "dataset_version",
+            "dataset_file",
+        )
+
+    @display(description="Status", ordering="status", label=JOB_STATUS_LABELS)
+    def status_badge(self, obj):
+        return (obj.status, obj.get_status_display())
