@@ -408,6 +408,21 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = config(
     cast=int,
     default=1,
 )
+CELERY_WORKER_CONCURRENCY = config(
+    "CELERY_WORKER_CONCURRENCY",
+    cast=int,
+    default=1,
+)
+CELERY_WORKER_MAX_TASKS_PER_CHILD = config(
+    "CELERY_WORKER_MAX_TASKS_PER_CHILD",
+    cast=int,
+    default=20,
+)
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = config(
+    "CELERY_WORKER_MAX_MEMORY_PER_CHILD",
+    cast=int,
+    default=300000,
+)
 CELERY_TASK_TIME_LIMIT = config(
     "CELERY_TASK_TIME_LIMIT",
     cast=int,
