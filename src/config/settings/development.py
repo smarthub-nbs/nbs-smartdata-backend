@@ -14,7 +14,6 @@ from .base import (
     merge_unique,
 )
 
-
 SECRET_KEY = config("SECRET_KEY", default=SECRET_KEY)
 DEBUG = config("DEBUG", cast=bool, default=True)
 
