@@ -1,4 +1,6 @@
+from django import forms
 from django.contrib import admin
+from django.utils import timezone
 from unfold.admin import ModelAdmin, StackedInline, TabularInline
 from unfold.contrib.filters.admin import (
     AutocompleteSelectFilter,
@@ -31,6 +33,7 @@ from .models import (
     Region,
     Tag,
 )
+from .serializers import inspect_dataset_file
 
 
 class TimestampedAdminMixin:
@@ -246,6 +249,24 @@ class DatasetFileInline(TabularInline):
     show_change_link = True
 
 
+class DatasetFileAdminForm(forms.ModelForm):
+    class Meta:
+        model = DatasetFile
+        fields = "__all__"
+
+    def clean_file(self):
+        uploaded_file = self.cleaned_data.get("file")
+        if uploaded_file is None:
+            return uploaded_file
+
+        inspection = inspect_dataset_file(uploaded_file)
+        if inspection["errors"]:
+            raise forms.ValidationError(" ".join(inspection["errors"]))
+
+        self.cleaned_data["_dataset_file_inspection"] = inspection
+        return uploaded_file
+
+
 @admin.register(DatasetVersion)
 class DatasetVersionAdmin(TimestampedAdminMixin, ModelAdmin):
     list_display = ("dataset", "version_number", "created_by", "created_at", "updated_at")
@@ -261,6 +282,7 @@ class DatasetVersionAdmin(TimestampedAdminMixin, ModelAdmin):
 
 @admin.register(DatasetFile)
 class DatasetFileAdmin(TimestampedAdminMixin, ModelAdmin):
+    form = DatasetFileAdminForm
     list_display = (
         "filename",
         "dataset_version",
@@ -302,6 +324,23 @@ class DatasetFileAdmin(TimestampedAdminMixin, ModelAdmin):
 
     def get_queryset(self, request):
         return DatasetFile.objects.select_related("dataset_version__dataset", "uploaded_by")
+
+    def save_model(self, request, obj, form, change):
+        inspection = form.cleaned_data.get("_dataset_file_inspection")
+        if inspection is not None:
+            obj.filename = inspection["filename"]
+            obj.file_size = inspection["file_size"]
+            obj.file_format = inspection["file_format"]
+            obj.checksum = inspection["checksum"]
+            obj.validation_status = FileValidationStatus.VALIDATED
+            obj.validated_at = timezone.now()
+            obj.validation_notes = "Automatic validation passed."
+            obj.is_safe = True
+
+        if obj.uploaded_by_id is None:
+            obj.uploaded_by = request.user
+
+        super().save_model(request, obj, form, change)
 
     @display(
         description="Validation",
