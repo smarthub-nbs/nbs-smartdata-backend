@@ -82,6 +82,13 @@ docker compose --env-file .env.docker up web celery_worker
 docker compose --env-file .env.docker --profile tools run --rm migrate
 ```
 
+1. Bootstrap the TISP cache once after the first deployment, or whenever
+   the database is empty:
+
+```bash
+docker compose --env-file .env.docker run --rm web python manage.py bootstrap_tisp_data
+```
+
 1. Create an admin user if you need Django admin access:
 
 ```bash
@@ -130,6 +137,13 @@ uv sync
 
 ```bash
 uv run python manage.py migrate
+```
+
+1. Bootstrap the TISP cache once after the first deployment, or whenever
+   the database is empty:
+
+```bash
+uv run python manage.py bootstrap_tisp_data
 ```
 
 1. Create an admin user if you need Django admin access:

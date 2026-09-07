@@ -20,9 +20,9 @@ ARGS ?=
 
 .PHONY: help \
 	env env-docker \
-	install install-frozen check migrate makemigrations seed-roles superuser runserver shell test schema collectstatic celery import-dataset-files sqlmigrate showmigrations dbshell \
+	install install-frozen check migrate makemigrations seed-roles superuser runserver shell test schema collectstatic celery import-dataset-files bootstrap-tisp-data sqlmigrate showmigrations dbshell \
 	docker-build docker-up docker-up-core docker-up-pgadmin docker-down docker-down-volumes docker-ps docker-logs docker-logs-web docker-logs-celery docker-restart-web docker-restart-celery \
-	docker-migrate docker-makemigrations docker-seed-roles docker-superuser docker-shell docker-test docker-schema docker-collectstatic docker-import-dataset-files
+	docker-migrate docker-makemigrations docker-seed-roles docker-superuser docker-shell docker-test docker-schema docker-collectstatic docker-import-dataset-files docker-bootstrap-tisp-data
 
 help: ## Show available commands.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nSmarthub commands\n\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-28s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -89,6 +89,9 @@ celery: ## Start local Celery worker.
 
 import-dataset-files: ## Import files from config/media/dataset_files locally.
 	cd $(SRC_DIR) && $(MANAGE) import_dataset_files $(ARGS)
+
+bootstrap-tisp-data: ## Refresh the TISP cache locally if it is missing.
+	cd $(SRC_DIR) && $(MANAGE) bootstrap_tisp_data $(ARGS)
 
 showmigrations: ## Show local migration status.
 	cd $(SRC_DIR) && $(MANAGE) showmigrations $(APP)
@@ -165,3 +168,6 @@ docker-collectstatic: ## Collect static files in Docker.
 
 docker-import-dataset-files: ## Import files from config/media/dataset_files in Docker.
 	$(COMPOSE) run --rm web python manage.py import_dataset_files $(ARGS)
+
+docker-bootstrap-tisp-data: ## Refresh the TISP cache in Docker if it is missing.
+	$(COMPOSE) run --rm web python manage.py bootstrap_tisp_data $(ARGS)
