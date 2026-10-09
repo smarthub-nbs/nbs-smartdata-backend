@@ -1,0 +1,103 @@
+{% extends "admin/base.html" %}
+
+{% load i18n %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_("Django site admin") }}{% endblock %}
+
+{% block branding %}
+    {% include "unfold/helpers/site_branding.html" %}
+{% endblock %}
+
+{% block content %}
+    <div class="flex flex-col lg:flex-row lg:gap-8">
+        <div class="grow space-y-6">
+            {% if dashboard_error %}
+                <div class="border border-orange-200 bg-orange-50 px-4 py-3 rounded-default text-orange-700 dark:bg-orange-500/10 dark:border-orange-500/20 dark:text-orange-300">
+                    {{ dashboard_error }}
+                </div>
+            {% endif %}
+
+            {% if dashboard_cards %}
+                <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    {% for card in dashboard_cards %}
+                        <a href="{{ card.href }}" class="bg-white border border-base-200 block p-5 rounded-default shadow-xs transition-all hover:border-base-300 hover:shadow-md dark:bg-base-900 dark:border-base-800 dark:hover:border-base-700">
+                            <div class="flex items-start gap-4">
+                                <span class="material-symbols-outlined bg-primary-100 h-10 leading-10 rounded-default text-center text-primary-700 w-10 dark:bg-primary-500/20 dark:text-primary-400">
+                                    {{ card.icon }}
+                                </span>
+                                <div class="min-w-0">
+                                    <div class="font-semibold text-important text-xl">{{ card.value }}</div>
+                                    <div class="font-medium text-important">{{ card.title }}</div>
+                                    <div class="mt-1 text-sm text-subtle">{{ card.description }}</div>
+                                </div>
+                            </div>
+                        </a>
+                    {% endfor %}
+                </div>
+            {% endif %}
+
+            <div class="grid gap-4 xl:grid-cols-3">
+                <section class="bg-white border border-base-200 rounded-default shadow-xs dark:bg-base-900 dark:border-base-800">
+                    <div class="border-b border-base-200 px-4 py-3 dark:border-base-800">
+                        <h2 class="font-semibold text-important">Recent Jobs</h2>
+                    </div>
+                    <div class="divide-y divide-base-200 dark:divide-base-800">
+                        {% for job in dashboard_jobs %}
+                            <div class="flex items-center gap-3 px-4 py-3">
+                                <div class="min-w-0 grow">
+                                    <div class="font-medium text-important truncate">{{ job.title }}</div>
+                                    <div class="text-sm text-subtle truncate">{{ job.user }}</div>
+                                </div>
+                                <span class="inline-block font-semibold rounded-default text-[11px] uppercase whitespace-nowrap px-2 py-1
+                                    {% if job.status == "completed" %}bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-400
+                                    {% elif job.status == "failed" %}bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400
+                                    {% elif job.status == "running" %}bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-400
+                                    {% else %}bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400{% endif %}">
+                                    {{ job.status }}
+                                </span>
+                            </div>
+                        {% empty %}
+                            <div class="px-4 py-6 text-sm text-subtle">No recent jobs.</div>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <section class="bg-white border border-base-200 rounded-default shadow-xs dark:bg-base-900 dark:border-base-800">
+                    <div class="border-b border-base-200 px-4 py-3 dark:border-base-800">
+                        <h2 class="font-semibold text-important">Recent Datasets</h2>
+                    </div>
+                    <div class="divide-y divide-base-200 dark:divide-base-800">
+                        {% for dataset in dashboard_recent_datasets %}
+                            <a href="{% url 'admin:datasets_dataset_change' dataset.pk %}" class="block px-4 py-3 hover:bg-base-50 dark:hover:bg-white/[.03]">
+                                <div class="font-medium text-important truncate">{{ dataset.slug }}</div>
+                                <div class="text-sm text-subtle truncate">{{ dataset.category }} by {{ dataset.publisher_user.email }}</div>
+                            </a>
+                        {% empty %}
+                            <div class="px-4 py-6 text-sm text-subtle">No datasets yet.</div>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <section class="bg-white border border-base-200 rounded-default shadow-xs dark:bg-base-900 dark:border-base-800">
+                    <div class="border-b border-base-200 px-4 py-3 dark:border-base-800">
+                        <h2 class="font-semibold text-important">TISP Cache</h2>
+                    </div>
+                    <div class="divide-y divide-base-200 dark:divide-base-800">
+                        {% for item in dashboard_cache_items %}
+                            <a href="{% url 'admin:tisp_tispapiresponsecache_change' item.pk %}" class="block px-4 py-3 hover:bg-base-50 dark:hover:bg-white/[.03]">
+                                <div class="font-medium text-important truncate">{{ item.endpoint }}</div>
+                                <div class="text-sm text-subtle truncate">{{ item.fetched_at }}</div>
+                            </a>
+                        {% empty %}
+                            <div class="px-4 py-6 text-sm text-subtle">No cached responses.</div>
+                        {% endfor %}
+                    </div>
+                </section>
+            </div>
+
+            {% include "unfold/helpers/app_list_default.html" %}
+        </div>
+
+        {% include "unfold/helpers/history.html" %}
+    </div>
+{% endblock %}

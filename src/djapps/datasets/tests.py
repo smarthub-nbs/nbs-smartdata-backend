@@ -4,9 +4,10 @@ import os
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import RequestFactory, TestCase, override_settings
 from pypdf import PdfWriter
 from rest_framework.request import Request
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -31,6 +32,7 @@ from .models import (
     FileValidationStatus,
     Tag,
 )
+from djapps.datasets.admin import DatasetFileAdmin
 from djapps.datasets.tasks import run_bulk_upload_job
 from djapps.datasets.views import DatasetAdminBulkUploadView
 from djapps.user_management.roles import ensure_group_permissions
@@ -127,6 +129,48 @@ class DatasetWorkflowTests(TestCase):
         )
         self.assertEqual(response.status_code, 201)
         return response
+
+    def test_admin_dataset_file_upload_populates_metadata(self):
+        dataset = self.create_draft_dataset(slug="admin-upload")
+        version = DatasetVersion.objects.create(
+            dataset=dataset,
+            created_by=self.admin,
+            version_number="1.0",
+        )
+        request = RequestFactory().post("/admin/datasets/datasetfile/add/")
+        request.user = self.admin
+        model_admin = DatasetFileAdmin(DatasetFile, AdminSite())
+        form_class = model_admin.get_form(request)
+        form = form_class(
+            data={
+                "dataset_version": str(version.pk),
+                "uploaded_by": str(self.admin.pk),
+                "is_primary": "on",
+                "validation_status": FileValidationStatus.VALIDATED,
+                "validation_notes": "",
+            },
+            files={
+                "file": SimpleUploadedFile(
+                    "admin-upload.csv",
+                    b"country,value\nTZ,10\n",
+                    content_type="text/csv",
+                )
+            },
+        )
+
+        self.assertTrue(form.is_valid(), form.errors.as_data())
+        dataset_file = form.save(commit=False)
+        model_admin.save_model(request, dataset_file, form, change=False)
+        dataset_file.refresh_from_db()
+
+        self.assertEqual(dataset_file.filename, "admin-upload.csv")
+        self.assertEqual(dataset_file.file_size, 20)
+        self.assertEqual(dataset_file.file_format, "csv")
+        self.assertEqual(len(dataset_file.checksum), 64)
+        self.assertEqual(dataset_file.validation_status, FileValidationStatus.VALIDATED)
+        self.assertEqual(dataset_file.validation_notes, "Automatic validation passed.")
+        self.assertTrue(dataset_file.is_safe)
+        self.assertIsNotNone(dataset_file.validated_at)
 
     def validate_dataset_file(self, dataset_file_id, user=None, validation_notes=""):
         self.client.force_authenticate(user=user or self.admin)

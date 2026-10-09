@@ -435,6 +435,7 @@ cp ../.env.example ../.env
 uv sync
 uv run python manage.py check
 uv run python manage.py migrate
+uv run python manage.py bootstrap_tisp_data
 uv run python manage.py seed_roles
 uv run python manage.py createsuperuser
 ```
@@ -460,6 +461,7 @@ Run from `src/`:
 ```bash
 uv run python manage.py check
 uv run python manage.py migrate
+uv run python manage.py bootstrap_tisp_data
 uv run celery -A config worker -l info
 ```
 

@@ -1,5 +1,6 @@
 from django.contrib import admin
 from unfold.admin import ModelAdmin
+from unfold.contrib.filters.admin import BooleanRadioFilter, RangeDateTimeFilter
 
 from .models import User
 
@@ -10,7 +11,15 @@ class UserAdmin(ModelAdmin):
     ordering = ("email",)
     list_display = ("email", "first_name", "last_name", "is_verified", "is_staff", "is_superuser")
     search_fields = ("email", "first_name", "last_name")
-    list_filter = ("is_verified", "is_staff", "is_superuser", "is_active", "groups")
+    list_filter = (
+        ("is_verified", BooleanRadioFilter),
+        ("is_staff", BooleanRadioFilter),
+        ("is_superuser", BooleanRadioFilter),
+        ("is_active", BooleanRadioFilter),
+        "groups",
+        ("created_at", RangeDateTimeFilter),
+        ("last_login_at", RangeDateTimeFilter),
+    )
     readonly_fields = ("created_at", "updated_at", "last_login", "last_login_at")
     filter_horizontal = ("groups", "user_permissions")
 

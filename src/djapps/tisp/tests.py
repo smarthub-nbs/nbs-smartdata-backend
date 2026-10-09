@@ -2,6 +2,9 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from djapps.tisp.management.commands.bootstrap_tisp_data import (
+    Command as BootstrapTispDataCommand,
+)
 from djapps.tisp.models import TispApiResponseCache, TispDataValue
 from djapps.tisp.services import search_cached_tisp_data
 
@@ -42,3 +45,32 @@ class TispCachedSearchTests(TestCase):
         self.assertIn("5,404,117", first[0]["dataSummary"])
         self.assertEqual(first, second)
 
+
+class TispBootstrapCommandTests(TestCase):
+    @patch("djapps.tisp.management.commands.bootstrap_tisp_data.call_command")
+    @patch.object(BootstrapTispDataCommand, "_cache_is_populated", return_value=False)
+    def test_bootstrap_runs_ingest_when_cache_is_empty(
+        self,
+        cache_is_populated,
+        ingest_command,
+    ):
+        BootstrapTispDataCommand().handle(timeout=45, verbosity=2)
+
+        cache_is_populated.assert_called_once_with()
+        ingest_command.assert_called_once_with(
+            "ingest_nbs_knowledge",
+            timeout=45,
+            verbosity=2,
+        )
+
+    @patch("djapps.tisp.management.commands.bootstrap_tisp_data.call_command")
+    @patch.object(BootstrapTispDataCommand, "_cache_is_populated", return_value=True)
+    def test_bootstrap_skips_when_cache_is_present(
+        self,
+        cache_is_populated,
+        ingest_command,
+    ):
+        BootstrapTispDataCommand().handle()
+
+        cache_is_populated.assert_called_once_with()
+        ingest_command.assert_not_called()
