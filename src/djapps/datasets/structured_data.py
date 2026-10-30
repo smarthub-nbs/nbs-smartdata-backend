@@ -14,6 +14,7 @@ from djapps.datasets.constants import (
     XLSX_PACKAGE_REL_NS,
     XLSX_REL_NS,
 )
+from djapps.datasets.storage import open_dataset_file
 
 
 def normalize_headers(raw_headers, width=None):
@@ -55,7 +56,7 @@ def to_row_dicts(headers, raw_rows):
 
 
 def load_delimited_rows(dataset_file, delimiter):
-    dataset_file.file.open("rb")
+    open_dataset_file(dataset_file)
     try:
         text_stream = io.TextIOWrapper(dataset_file.file, encoding="utf-8-sig", newline="")
         try:
@@ -138,7 +139,7 @@ def _coerce_xlsx_value(cell, shared_strings):
 
 
 def load_xlsx_rows(dataset_file):
-    dataset_file.file.open("rb")
+    open_dataset_file(dataset_file)
     try:
         with zipfile.ZipFile(dataset_file.file, "r") as archive:
             shared_strings = _load_xlsx_shared_strings(archive)
@@ -187,7 +188,7 @@ def _coerce_xls_value(cell, workbook):
 
 
 def load_xls_rows(dataset_file):
-    dataset_file.file.open("rb")
+    open_dataset_file(dataset_file)
     try:
         workbook = xlrd.open_workbook(file_contents=dataset_file.file.read())
         if workbook.nsheets == 0:
@@ -210,7 +211,7 @@ def load_xls_rows(dataset_file):
 
 
 def load_json_payload(dataset_file):
-    dataset_file.file.open("rb")
+    open_dataset_file(dataset_file)
     try:
         text_stream = io.TextIOWrapper(dataset_file.file, encoding="utf-8-sig")
         try:
@@ -224,7 +225,7 @@ def load_json_payload(dataset_file):
 
 
 def load_xml_root(dataset_file):
-    dataset_file.file.open("rb")
+    open_dataset_file(dataset_file)
     try:
         try:
             return ElementTree.fromstring(dataset_file.file.read())
@@ -490,7 +491,7 @@ def build_sdmx_payload(dataset_file, parsed_payload, offset, limit):
 
 
 def build_pdf_payload(dataset_file, offset, limit):
-    dataset_file.file.open("rb")
+    open_dataset_file(dataset_file)
     try:
         reader = PdfReader(dataset_file.file)
         total_pages = len(reader.pages)

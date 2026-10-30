@@ -53,6 +53,7 @@ from djapps.datasets.models import (
     Region,
     Tag,
 )
+from djapps.datasets.storage import open_dataset_file
 from djapps.datasets.helpers import (
     build_dataset_bulk_action_signature,
     build_dataset_bulk_upload_signature,
@@ -2596,7 +2597,7 @@ class DatasetFileView(DatasetScopedViewSet):
             details=request_audit_details(request, filename=dataset_file.filename),
         )
         return FileResponse(
-            dataset_file.file.open("rb"),
+            open_dataset_file(dataset_file),
             as_attachment=True,
             filename=dataset_file.filename,
         )

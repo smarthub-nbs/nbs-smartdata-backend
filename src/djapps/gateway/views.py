@@ -25,6 +25,7 @@ from djapps.datasets.models import (
     FileValidationStatus,
     Tag,
 )
+from djapps.datasets.storage import open_dataset_file
 from djapps.datasets.structured_data import build_structured_payload
 from djapps.datasets.serializers import (
     CategorySerializer,
@@ -731,7 +732,7 @@ class OpenDatasetDownloadAPIView(OpenDatasetBaseAPIView):
             ),
         )
         return FileResponse(
-            dataset_file.file.open("rb"),
+            open_dataset_file(dataset_file),
             as_attachment=True,
             filename=dataset_file.filename,
         )
@@ -1372,7 +1373,7 @@ class OpenDatasetFileDownloadAPIView(OpenDatasetFileResourceAPIView):
             details=request_audit_details(request, filename=dataset_file.filename, source="gateway"),
         )
         return FileResponse(
-            dataset_file.file.open("rb"),
+            open_dataset_file(dataset_file),
             as_attachment=True,
             filename=dataset_file.filename,
         )

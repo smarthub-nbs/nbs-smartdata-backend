@@ -569,6 +569,23 @@ class GatewayDatasetViewTests(OpenDatasetFixtureMixin, TestCase):
             [{"country": "TZ", "value": "11"}],
         )
 
+    def test_gateway_preview_returns_not_found_when_file_is_missing_from_storage(self):
+        self.public_file.file.name = "dataset_files/missing-after-redeploy.csv"
+        self.public_file.save(update_fields=["file"])
+
+        response = self.client.get(
+            f"/api/v1/gateway/files/{self.public_file.id}/preview/",
+            **self.gateway_headers(),
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(response.data["success"])
+        self.assertEqual(response.data["error"]["code"], "not_found")
+        self.assertEqual(
+            response.data["error"]["message"],
+            "Dataset file is missing from storage. Re-upload the file or configure persistent media storage.",
+        )
+
     def test_gateway_facets_and_changes_endpoints_support_public_filters(self):
         category_two = Category.objects.create(name="Population", slug="population")
         tag_two = Tag.objects.create(name="Population Data", slug="population-data")
