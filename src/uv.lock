@@ -621,7 +621,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "django-debug-toolbar" },
-    { name = "xlwt" },
 ]
 test = [
     { name = "xlwt" },
@@ -648,10 +647,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "django-debug-toolbar", specifier = ">=8.0.0" },
-    { name = "xlwt", specifier = ">=1.3.0" },
 ]
-production = []
-staging = []
 test = [{ name = "xlwt", specifier = ">=1.3.0" }]
 
 [[package]]
