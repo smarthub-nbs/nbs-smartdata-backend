@@ -3,6 +3,7 @@ FROM python:3.13-alpine
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DJANGO_SETTINGS_MODULE=config.settings.production \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_NO_DEV=1 \
     UV_LINK_MODE=copy \
