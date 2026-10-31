@@ -1110,6 +1110,10 @@ class OpenDatasetFormatListAPIView(OpenDatasetBaseAPIView):
     serializer_class = DatasetFormatSerializer
 
     def get_queryset(self):
+        # drf-spectacular calls get_queryset() while generating the OpenAPI
+        # schema. Do not execute the facet query during schema introspection.
+        if getattr(self, "swagger_fake_view", False):
+            return DatasetFile.objects.none()
         return self.get_format_facets()
 
     @extend_schema(
