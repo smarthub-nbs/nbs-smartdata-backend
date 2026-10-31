@@ -19,8 +19,6 @@ from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 
-from django.conf import settings
-
 prefix = "api/v1"
 
 urlpatterns = [
@@ -37,7 +35,3 @@ urlpatterns = [
     path(f"{prefix}/", include("djapps.tisp.urls")),
 ]
 
-if settings.DEBUG:
-    urlpatterns += [
-        path("__debug__/", include("debug_toolbar.urls")),
-    ]

@@ -22,10 +22,6 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = [
-    "django-debug-toolbar>=8.0.0",
-]
-
 test = [
     "xlwt>=1.3.0",
 ]
