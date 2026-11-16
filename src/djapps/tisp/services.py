@@ -16,6 +16,14 @@ from djapps.tisp.models import (
     TispKnowledgeDocument,
     CensusDataRecord,
 )
+from djapps.tisp.regional_population import (
+    REGIONAL_POPULATION_2022,
+    REGIONAL_POPULATION_SOURCE,
+    ZANZIBAR_POPULATION_SOURCE,
+)
+from djapps.tisp.population_pyramid import (
+    build_tanzania_population_pyramid_dataset,
+)
 
 
 TISP_BASE_URL = "https://tisp.nbs.go.tz:8000"
@@ -41,9 +49,16 @@ class TispFetchError(Exception):
 
 
 def search_cached_tisp_data(query):
-    normalized = query.strip().lower()
+    normalized = _normalize_search_query(query)
     if not normalized:
         return []
+
+    if _is_population_pyramid_query(normalized):
+        return [build_tanzania_population_pyramid_dataset()]
+
+    regional_population = _regional_population_dataset(normalized)
+    if regional_population is not None:
+        return [regional_population]
 
     lookup = _find_known_lookup(normalized)
     if lookup is None:
@@ -51,6 +66,156 @@ def search_cached_tisp_data(query):
 
     rows = _get_known_datavalues(lookup)
     return [_map_known_lookup_to_dataset(lookup, rows)] if rows else []
+
+
+def _is_population_pyramid_query(query):
+    terms = set(query.split())
+    return "population" in terms and (
+        "pyramid" in terms or {"age", "sex"}.issubset(terms)
+    )
+
+
+def _normalize_search_query(query):
+    normalized = re.sub(r"[^a-z0-9\s-]", " ", query.strip().lower())
+    normalized = re.sub(
+        r"\bidadi\s+ya\s+(?:watu|wakazi)\b",
+        "population",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\b(?:(?:watu|wakazi)\s+wangapi|wangapi\s+(?:watu|wakazi))\b",
+        "population",
+        normalized,
+    )
+    normalized = re.sub(r"\b(?:watu|wakazi)\b", "population", normalized)
+    topic_aliases = {
+        "kilimo": "agriculture",
+        "afya": "health",
+        "elimu": "education",
+        "uchumi": "economy",
+        "sensa": "census",
+        "maji": "water",
+        "utalii": "tourism",
+    }
+    for swahili, english in topic_aliases.items():
+        normalized = re.sub(rf"\b{swahili}\b", english, normalized)
+    normalized = re.sub(r"\bmfumuko\s+wa\s+bei\b", "inflation", normalized)
+    normalized = re.sub(
+        r"\bnumber\s+of\s+(?:people|persons|residents)\b",
+        "population",
+        normalized,
+    )
+    normalized = re.sub(r"\b(?:people|persons|residents)\b", "population", normalized)
+    normalized = re.sub(r"\bwanawake\b", "female", normalized)
+    normalized = re.sub(r"\bwanaume\b", "male", normalized)
+    normalized = re.sub(r"\bdom\b", "dodoma", normalized)
+    normalized = re.sub(r"\bdsm\b", "dar es salaam", normalized)
+    normalized = re.sub(
+        r"\b(?:in|at|for|the|of|with|official|source|ya|wa|kwa|katika|ni|je|mkoa|mwaka|idadi|ngapi|wangapi|na|niambie|uniambie|uniambia|umetoa|wapi|hii|cha|taarifa|chanzo)\b",
+        " ",
+        normalized,
+    )
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _regional_population_dataset(query):
+    if "population" not in query.split():
+        return None
+
+    requested_areas = _requested_area_terms(query)
+    area_key = next(
+        (area for area in requested_areas if area in REGIONAL_POPULATION_2022),
+        None,
+    )
+    if area_key is None:
+        return None
+
+    total, male, female = REGIONAL_POPULATION_2022[area_key]
+    if area_key in {"mainland", "tanzania mainland"}:
+        area_name = area_label = "Tanzania Mainland"
+    elif area_key == "zanzibar":
+        area_name = area_label = "Tanzania Zanzibar"
+    else:
+        area_name = area_key.title()
+        area_label = f"{area_name} Region"
+    male_share = male / total * 100
+    female_share = female / total * 100
+    difference = abs(female - male)
+    larger_group = "females" if female >= male else "males"
+    source = (
+        ZANZIBAR_POPULATION_SOURCE
+        if area_key == "zanzibar"
+        else REGIONAL_POPULATION_SOURCE
+    )
+    facts = [
+        f"Total population in {area_label} was {total:,} in 2022",
+        (
+            f"Female population in {area_label} was {female:,} "
+            f"({female_share:.1f}%) in 2022"
+        ),
+        (
+            f"Male population in {area_label} was {male:,} "
+            f"({male_share:.1f}%) in 2022"
+        ),
+        (
+            f"There were {difference:,} more {larger_group} than "
+            f"{'males' if larger_group == 'females' else 'females'}"
+        ),
+    ]
+    if area_key == "zanzibar":
+        facts.extend(
+            (
+                "Rural population in Tanzania Zanzibar was 963,498 (51.0%) in 2022",
+                "Urban population in Tanzania Zanzibar was 926,275 (49.0%) in 2022",
+            )
+        )
+    facts.append(
+        f"Official source: {source['report']}, {source['table']}, page {source['page']}"
+    )
+    if area_key == "zanzibar":
+        facts.extend(
+            (
+                f"Official report URL: {source['url']}",
+                f"NBS Census Dissemination Platform: {source['census_url']}",
+                f"TISP Zanzibar: {source['tisp_url']}",
+            )
+        )
+    summary = "; ".join(facts) + "."
+
+    return {
+        "id": f"nbs-2022-phc-region-sex-{area_key.replace(' ', '-')}",
+        "title": f"{area_label} population by sex — 2022 PHC",
+        "description": (
+            f"Official NBS 2022 census totals for {area_label}, including male "
+            f"and female population. Source: {source['report']}, "
+            f"{source['table']}, page {source['page']}."
+        ),
+        "topicSlug": "population",
+        "topicName": "Population",
+        "format": "PDF",
+        "frequency": "Every ten years",
+        "region": area_name,
+        "keywords": [
+            "NBS",
+            "census",
+            "population",
+            "2022",
+            area_name,
+            "male",
+            "female",
+            "rural",
+            "urban",
+            "wanaume",
+            "wanawake",
+        ],
+        "publisher": source["publisher"],
+        "updatedAt": "2022-08-23",
+        "recordCount": 5 if area_key == "zanzibar" else 3,
+        "license": "Official NBS public data",
+        "sourceUrl": source["url"],
+        "dataSummary": summary,
+        "cached": True,
+    }
 
 
 def _find_known_lookup(query):
@@ -228,10 +393,11 @@ def _search_census_records(tokens, query=None):
 
 
 KNOWN_AREA_NAMES = {
-    "tanzania", "mainland", "zanzibar", "arusha", "dar es salaam", "dodoma",
+    "tanzania", "tanzania mainland", "mainland", "zanzibar", "arusha", "dar es salaam", "dodoma",
     "mwanza", "mbeya", "morogoro", "tanga", "simiyu", "mara", "kigoma",
     "kilimanjaro", "tabora", "iringa", "mtwara", "lindi", "pwani", "geita",
-    "katavi", "rukwa", "singida", "shinyanga", "kagera", "njombe",
+    "katavi", "rukwa", "singida", "shinyanga", "kagera", "njombe", "ruvuma",
+    "manyara", "simiyu", "songwe",
     "tanga mjini", "tanga city", "tanga cc", "tanga city council",
 }
 

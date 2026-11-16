@@ -22,6 +22,7 @@ class TispCachedDatasetSerializer(serializers.Serializer):
     sourceUrl = serializers.CharField()
     dataSummary = serializers.CharField()
     cached = serializers.BooleanField()
+    searchVisualization = serializers.DictField(required=False)
 
 
 class TispCachedSearchResponseSerializer(serializers.Serializer):

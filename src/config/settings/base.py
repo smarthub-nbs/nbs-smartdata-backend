@@ -208,9 +208,22 @@ DATASET_ALLOWED_FILE_EXTENSIONS = tuple(
     if item.strip()
 )
 
-OPENAI_API_KEY = config("OPENAI_API_KEY", default="")
-OPENAI_MODEL = config("OPENAI_MODEL", default="gpt-4.1-mini")
-OPENAI_TIMEOUT_SECONDS = config("OPENAI_TIMEOUT_SECONDS", cast=int, default=20)
+OPENROUTER_API_KEY = config("OPENROUTER_API_KEY", default="")
+OPENROUTER_MODEL = config("OPENROUTER_MODEL", default="openrouter/free")
+OPENROUTER_BASE_URL = config(
+    "OPENROUTER_BASE_URL",
+    default="https://openrouter.ai/api/v1",
+).rstrip("/")
+OPENROUTER_TIMEOUT_SECONDS = config(
+    "OPENROUTER_TIMEOUT_SECONDS",
+    cast=int,
+    default=30,
+)
+OPENROUTER_SITE_URL = config("OPENROUTER_SITE_URL", default="")
+OPENROUTER_APP_NAME = config(
+    "OPENROUTER_APP_NAME",
+    default="NBS SmartData Hub",
+)
 TISP_CACHE_TTL_SECONDS = config("TISP_CACHE_TTL_SECONDS", cast=int, default=60 * 60 * 24)
 TISP_FETCH_TIMEOUT_SECONDS = config("TISP_FETCH_TIMEOUT_SECONDS", cast=int, default=20)
 

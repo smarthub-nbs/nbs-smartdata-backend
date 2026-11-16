@@ -20,7 +20,7 @@ class AiSearchAnswerView(StandardizedAPIView):
         description=(
             "Generate a natural-language answer using only the supplied "
             "NBS/TISP facts and result summaries. Falls back to the deterministic "
-            "answer when OpenAI is not configured or unavailable."
+            "answer when OpenRouter is not configured or unavailable."
         ),
         auth=[],
         request=AiSearchAnswerRequestSerializer,
